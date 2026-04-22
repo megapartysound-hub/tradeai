@@ -592,9 +592,12 @@ function getFinnhubSymbol(sym) {
 const FINNHUB_KEY = 'd7klcm1r01qiqbcus37gd7klcm1r01qiqbcus380';
 
 async function fetchPrice(sym) {
-  return await tryFinnhub(sym)
-      || await tryAllOrigins(sym)
-      || await tryCorsProxy(sym);
+  // Timeout de 8 segundos para que nunca quede colgado
+  const timeout = new Promise(resolve => setTimeout(() => resolve(null), 8000));
+  const fetch_result = tryFinnhub(sym)
+      .then(r => r || tryAllOrigins(sym))
+      .then(r => r || tryCorsProxy(sym));
+  return Promise.race([fetch_result, timeout]);
 }
 
 async function tryFinnhub(sym) {
@@ -660,33 +663,32 @@ function parseYahooMeta(meta) {
 }
 
 // ============================================================
-// TIPO DE CAMBIO USD → ARS (dolarito.ar — API pública argentina)
+// TIPO DE CAMBIO USD → ARS (dolarapi.com — tiene CORS abierto)
 // ============================================================
 let usdArsRate = null;
 
 async function fetchUsdArs() {
-  // Usamos dolarapi.com que devuelve cotizaciones argentinas
   try {
+    // dolarapi.com tiene CORS habilitado, funciona directo desde el browser
     const res = await fetch('https://dolarapi.com/v1/dolares/blue');
     if (!res.ok) throw new Error();
     const d = await res.json();
-    // venta es el precio al que compras USD (más relevante para calcular en ARS)
     usdArsRate = d.venta || d.compra;
     document.getElementById('arsTcambio').textContent = `TC Blue $${usdArsRate.toLocaleString('es-AR')}`;
     return usdArsRate;
   } catch {
-    // Fallback: infobae/ambito proxy
     try {
-      const target = encodeURIComponent('https://api.bluelytics.com.ar/v2/latest');
-      const res2 = await fetch(`https://api.allorigins.win/get?url=${target}`);
-      const wrapper = await res2.json();
-      const d2 = JSON.parse(wrapper.contents);
-      usdArsRate = d2?.blue?.value_sell || d2?.oficial?.value_sell;
-      if (usdArsRate) {
-        document.getElementById('arsTcambio').textContent = `TC Blue $${usdArsRate.toLocaleString('es-AR')}`;
-      }
+      // Fallback: argentinadatos.com
+      const res2 = await fetch('https://api.argentinadatos.com/v1/cotizaciones/dolares/blue');
+      if (!res2.ok) throw new Error();
+      const d2 = await res2.json();
+      usdArsRate = d2.venta || d2.compra;
+      if (usdArsRate) document.getElementById('arsTcambio').textContent = `TC Blue $${usdArsRate.toLocaleString('es-AR')}`;
       return usdArsRate;
-    } catch { return null; }
+    } catch {
+      document.getElementById('arsTcambio').textContent = 'TC no disponible';
+      return null;
+    }
   }
 }
 
