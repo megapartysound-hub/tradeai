@@ -559,66 +559,75 @@ let isLoading = false;
 let ANTHROPIC_API_KEY = localStorage.getItem('tradeai_apikey') || '';
 let currentPriceData = {}; // stores fetched real price data
 
-// Map from app symbol to Yahoo Finance ticker
-const symbolMap = {
-  'BTC-USD': 'BTCUSD',  // TradingView uses BTCUSD
-};
-// Reverse: TradingView symbol -> Yahoo symbol
-const tvToYahoo = {
-  'BTCUSD': 'BTC-USD',
-};
-function getYahooSymbol(sym) {
-  return tvToYahoo[sym] || sym;
-}
+// Símbolo TV para gráficos
 function getTVSymbol(sym) {
-  return symbolMap[sym] || sym;
+  const map = { 'BTC-USD': 'BTCUSD', 'ETH-USD': 'ETHUSD', 'GC=F': 'GOLD' };
+  return map[sym] || sym;
+}
+// Símbolo Finnhub
+function getFinnhubSymbol(sym) {
+  const map = { 'BTC-USD': 'BINANCE:BTCUSDT', 'ETH-USD': 'BINANCE:ETHUSDT', 'GC=F': 'OANDA:XAUUSD' };
+  return map[sym] || sym;
 }
 
 // ============================================================
-// REAL PRICE FETCHING — múltiples fuentes con fallback
+// REAL PRICE FETCHING
+// Fuente 1: Finnhub (free tier, no CORS issues)
+// Fuente 2: AllOrigins proxy → Yahoo Finance
+// Fuente 3: corsproxy.io → Yahoo Finance
 // ============================================================
+
+// Finnhub free key — límite 60 req/min, suficiente para esta app
+const FINNHUB_KEY = 'd7klcm1r01qiqbcus37gd7klcm1r01qiqbcus380';
+
 async function fetchPrice(sym) {
-  const yahooSym = getYahooSymbol(sym);
-
-  // Intentamos varias fuentes en orden hasta que una funcione
-  const result = await tryYahooV8(yahooSym)
-               || await tryYahooV7(yahooSym)
-               || await tryAllOrigins(yahooSym);
-
-  return result;
+  return await tryFinnhub(sym)
+      || await tryAllOrigins(sym)
+      || await tryCorsProxy(sym);
 }
 
-async function tryYahooV8(sym) {
-  // Proxy CORS público confiable
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=2d&corsDomain=finance.yahoo.com`;
+async function tryFinnhub(sym) {
+  const fsym = getFinnhubSymbol(sym);
   try {
-    const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+    const url = `https://finnhub.io/api/v1/quote?symbol=${fsym}&token=${FINNHUB_KEY}`;
+    const res = await fetch(url);
     if (!res.ok) return null;
-    const data = await res.json();
-    return parseYahooMeta(data?.chart?.result?.[0]?.meta);
-  } catch { return null; }
-}
-
-async function tryYahooV7(sym) {
-  // Endpoint alternativo de Yahoo
-  const url = `https://query2.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=2d`;
-  try {
-    const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
-    if (!res.ok) return null;
-    const data = await res.json();
-    return parseYahooMeta(data?.chart?.result?.[0]?.meta);
+    const d = await res.json();
+    // Finnhub returns: c=current, d=change, dp=change%, h=high, l=low, o=open, pc=prevClose
+    if (!d.c || d.c === 0) return null;
+    return {
+      price: d.c,
+      prevClose: d.pc,
+      change: d.d,
+      changePct: d.dp,
+      dayHigh: d.h,
+      dayLow: d.l,
+      currency: 'USD',
+      marketState: 'REGULAR',
+      timestamp: new Date()
+    };
   } catch { return null; }
 }
 
 async function tryAllOrigins(sym) {
-  // Usa allorigins.win como proxy CORS
-  const target = encodeURIComponent(`https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=2d`);
-  const url = `https://api.allorigins.win/get?url=${target}`;
+  const yahooSym = sym.replace('BTCUSD','BTC-USD');
+  const target = encodeURIComponent(`https://query1.finance.yahoo.com/v8/finance/chart/${yahooSym}?interval=1d&range=2d`);
   try {
-    const res = await fetch(url);
+    const res = await fetch(`https://api.allorigins.win/get?url=${target}`);
     if (!res.ok) return null;
     const wrapper = await res.json();
     const data = JSON.parse(wrapper.contents);
+    return parseYahooMeta(data?.chart?.result?.[0]?.meta);
+  } catch { return null; }
+}
+
+async function tryCorsProxy(sym) {
+  const yahooSym = sym.replace('BTCUSD','BTC-USD');
+  const target = encodeURIComponent(`https://query1.finance.yahoo.com/v8/finance/chart/${yahooSym}?interval=1d&range=2d`);
+  try {
+    const res = await fetch(`https://corsproxy.io/?${target}`);
+    if (!res.ok) return null;
+    const data = await res.json();
     return parseYahooMeta(data?.chart?.result?.[0]?.meta);
   } catch { return null; }
 }
@@ -630,10 +639,7 @@ function parseYahooMeta(meta) {
   const change = price - prevClose;
   const changePct = prevClose ? (change / prevClose) * 100 : 0;
   return {
-    price,
-    prevClose,
-    change,
-    changePct,
+    price, prevClose, change, changePct,
     dayHigh: meta.regularMarketDayHigh || price,
     dayLow: meta.regularMarketDayLow || price,
     currency: meta.currency || 'USD',
@@ -1012,7 +1018,7 @@ Sos conciso pero completo. Cuando des niveles de precio, sé específico. Cuando
         'anthropic-dangerous-direct-browser-access': 'true'
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 1000,
         system: systemPrompt,
         messages: conversationHistory,
