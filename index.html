@@ -394,12 +394,19 @@
     <div class="chart-toolbar">
       <div style="display:flex;align-items:center;gap:14px;">
         <div class="current-symbol" id="currentSymbol">AAPL</div>
-        <div class="price-display">
-          <div class="price-val" id="currentPrice" style="color:var(--green);">
-            <span class="price-loading">cargando...</span>
+        <div style="display:flex;flex-direction:column;gap:2px;">
+          <div class="price-display">
+            <div class="price-val" id="currentPrice" style="color:var(--green);">
+              <span class="price-loading">cargando...</span>
+            </div>
+            <div class="price-chg" id="currentChange" style="color:var(--muted);"></div>
+            <span class="price-timestamp" id="priceTimestamp"></span>
           </div>
-          <div class="price-chg" id="currentChange" style="color:var(--muted);"></div>
-          <span class="price-timestamp" id="priceTimestamp"></span>
+          <div style="font-size:0.68rem;color:var(--muted);display:flex;align-items:center;gap:6px;">
+            <span style="color:var(--muted);">ARS</span>
+            <span id="arsPrice" style="color:var(--yellow);font-weight:700;">cargando...</span>
+            <span id="arsTcambio" style="font-size:0.6rem;color:var(--muted);"></span>
+          </div>
         </div>
       </div>
       <div style="display:flex;gap:8px;">
@@ -429,6 +436,10 @@
       <div class="a-card">
         <div class="a-card-label">Mín. del día</div>
         <div class="a-card-val neutral" id="badge-low">—</div>
+      </div>
+      <div class="a-card" style="border-left:1px solid rgba(255,204,0,.2);background:rgba(255,204,0,.03);">
+        <div class="a-card-label" style="color:var(--yellow);">En ARS 🇦🇷</div>
+        <div class="a-card-val" style="color:var(--yellow);font-size:0.75rem;" id="badge-ars">—</div>
       </div>
     </div>
 
@@ -648,7 +659,46 @@ function parseYahooMeta(meta) {
   };
 }
 
-function formatPrice(price, currency) {
+// ============================================================
+// TIPO DE CAMBIO USD → ARS (dolarito.ar — API pública argentina)
+// ============================================================
+let usdArsRate = null;
+
+async function fetchUsdArs() {
+  // Usamos dolarapi.com que devuelve cotizaciones argentinas
+  try {
+    const res = await fetch('https://dolarapi.com/v1/dolares/blue');
+    if (!res.ok) throw new Error();
+    const d = await res.json();
+    // venta es el precio al que compras USD (más relevante para calcular en ARS)
+    usdArsRate = d.venta || d.compra;
+    document.getElementById('arsTcambio').textContent = `TC Blue $${usdArsRate.toLocaleString('es-AR')}`;
+    return usdArsRate;
+  } catch {
+    // Fallback: infobae/ambito proxy
+    try {
+      const target = encodeURIComponent('https://api.bluelytics.com.ar/v2/latest');
+      const res2 = await fetch(`https://api.allorigins.win/get?url=${target}`);
+      const wrapper = await res2.json();
+      const d2 = JSON.parse(wrapper.contents);
+      usdArsRate = d2?.blue?.value_sell || d2?.oficial?.value_sell;
+      if (usdArsRate) {
+        document.getElementById('arsTcambio').textContent = `TC Blue $${usdArsRate.toLocaleString('es-AR')}`;
+      }
+      return usdArsRate;
+    } catch { return null; }
+  }
+}
+
+function formatARS(usdPrice) {
+  if (!usdPrice || !usdArsRate) return '—';
+  const ars = usdPrice * usdArsRate;
+  if (ars >= 1000000) return '$' + (ars / 1000000).toFixed(2) + 'M';
+  if (ars >= 1000) return '$' + ars.toLocaleString('es-AR', {minimumFractionDigits: 0, maximumFractionDigits: 0});
+  return '$' + ars.toFixed(2);
+}
+
+
   if (!price) return '—';
   if (price >= 10000) return price.toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0});
   if (price >= 100) return price.toFixed(2);
@@ -714,6 +764,16 @@ async function updatePriceDisplay(sym) {
 
   document.getElementById('badge-low').textContent = `$${formatPrice(data.dayLow)}`;
   document.getElementById('badge-low').className = 'a-card-val neutral';
+
+  // ARS conversion
+  const arsEl = document.getElementById('arsPrice');
+  if (arsEl) {
+    arsEl.textContent = usdArsRate ? formatARS(data.price) : 'sin TC';
+  }
+  const badgeArs = document.getElementById('badge-ars');
+  if (badgeArs) {
+    badgeArs.textContent = usdArsRate ? formatARS(data.price) : '—';
+  }
 
   // Context note
   document.getElementById('ctxPrice').textContent = `$${priceStr}`;
@@ -1000,9 +1060,11 @@ async function callClaudeAPI() {
     ? `Datos de precio REALES en tiempo real: Precio: $${formatPrice(pd.price)}, Cambio: ${pd.change >= 0 ? '+' : ''}${pd.change.toFixed(2)} (${pd.change >= 0 ? '+' : ''}${pd.changePct.toFixed(2)}%), Máximo del día: $${formatPrice(pd.dayHigh)}, Mínimo del día: $${formatPrice(pd.dayLow)}.`
     : 'No hay datos de precio disponibles en este momento.';
 
+  const arsInfo = usdArsRate ? ` Tipo de cambio USD/ARS (dólar blue): $${usdArsRate.toLocaleString('es-AR')}. Precio en ARS: ${formatARS(pd?.price)}.` : '';
+
   const systemPrompt = `Sos un experto analista de trading y mercados financieros. El usuario está mirando el gráfico de ${sym} en temporalidad ${currentInterval} con los indicadores: ${activeIndicators.join(', ')}.
 
-${priceInfo}
+${priceInfo}${arsInfo}
 
 Respondé siempre en español, de forma clara, técnica y accionable. Usá formato markdown: **negrita** para niveles de precio importantes, *cursiva* para alertas o puntos de atención, listas para múltiples puntos, y emojis con moderación (📈 📉 ⚡ 🎯 ⚠️).
 
@@ -1104,6 +1166,10 @@ window.addEventListener('load', () => {
 
   // Init TradingView chart
   initTradingView('AAPL', 'D');
+
+  // Fetch tipo de cambio ARS
+  fetchUsdArs();
+  setInterval(fetchUsdArs, 300000); // cada 5 minutos
 
   // Fetch real price for current symbol
   updatePriceDisplay('AAPL');
