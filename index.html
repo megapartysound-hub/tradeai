@@ -813,6 +813,7 @@ const studyMap = {
 
 let tvScriptLoaded = false;
 let tvWidget = null;
+let tvReady = false;
 
 function loadTVScript(callback) {
   if (tvScriptLoaded) { callback(); return; }
@@ -822,33 +823,54 @@ function loadTVScript(callback) {
   document.head.appendChild(s);
 }
 
-function buildChart(symbol, iv) {
+function createWidget(symbol, iv) {
   const studies = indicators.map(i => studyMap[i]).filter(Boolean);
+  // Give the container a fresh id to avoid conflicts
+  const container = document.getElementById('tv-chart');
+  container.innerHTML = '';
 
+  tvReady = false;
+  tvWidget = new TradingView.widget({
+    container_id: 'tv-chart',
+    autosize: true,
+    symbol: symbol,
+    interval: iv,
+    timezone: 'America/Argentina/Buenos_Aires',
+    theme: 'dark',
+    style: '1',
+    locale: 'es',
+    toolbar_bg: '#0d1117',
+    enable_publishing: false,
+    withdateranges: true,
+    hide_side_toolbar: false,
+    allow_symbol_change: true,
+    save_image: false,
+    studies: studies,
+    backgroundColor: 'rgba(7, 9, 15, 1)',
+    gridColor: 'rgba(28, 37, 53, 0.8)',
+  });
+
+  // Mark widget as ready once chart loads
+  tvWidget.onChartReady(() => { tvReady = true; });
+}
+
+function buildChart(symbol, iv) {
   loadTVScript(() => {
-    // Clear previous widget
-    document.getElementById('tv-chart').innerHTML = '';
-    if (tvWidget) { try { tvWidget.remove(); } catch(e){} }
-
-    tvWidget = new TradingView.widget({
-      container_id: 'tv-chart',
-      autosize: true,
-      symbol: symbol,
-      interval: iv,
-      timezone: 'America/Argentina/Buenos_Aires',
-      theme: 'dark',
-      style: '1',
-      locale: 'es',
-      toolbar_bg: '#0d1117',
-      enable_publishing: false,
-      withdateranges: true,
-      hide_side_toolbar: false,
-      allow_symbol_change: true,
-      save_image: false,
-      studies: studies,
-      backgroundColor: 'rgba(7, 9, 15, 1)',
-      gridColor: 'rgba(28, 37, 53, 0.8)',
-    });
+    if (!tvWidget || !tvReady) {
+      // No widget yet or not ready — create fresh
+      createWidget(symbol, iv);
+      return;
+    }
+    // Widget exists and is ready — use its API to change symbol/interval
+    try {
+      const chart = tvWidget.activeChart();
+      chart.setSymbol(symbol, () => {
+        chart.setResolution(iv, () => {});
+      });
+    } catch(e) {
+      // Fallback: recreate if API fails
+      createWidget(symbol, iv);
+    }
   });
 }
 
@@ -893,10 +915,16 @@ function switchSym(s) {
   // Update watchlist active
   document.querySelectorAll('.wl-item').forEach(el => {
     const ws = el.querySelector('.wl-sym')?.textContent;
-    el.classList.toggle('active', ws === sym || (sym === 'BTCUSDT' && ws === 'BTC') || (sym === 'ETHUSDT' && ws === 'ETH') || (sym === 'XAUUSD' && ws === 'GOLD'));
+    el.classList.toggle('active',
+      ws === sym ||
+      (sym === 'BTCUSDT' && ws === 'BTC') ||
+      (sym === 'ETHUSDT' && ws === 'ETH') ||
+      (sym === 'XAUUSD' && ws === 'GOLD')
+    );
   });
 
-  buildChart(tvSym, interval);
+  // Always recreate the widget when changing symbol — most reliable approach
+  loadTVScript(() => createWidget(tvSym, interval));
 }
 
 function setInterval_(iv, btn) {
@@ -904,7 +932,7 @@ function setInterval_(iv, btn) {
   document.querySelectorAll('.int-btn').forEach(b => b.classList.remove('active'));
   if (btn) btn.classList.add('active');
   document.getElementById('ctxInt').textContent = iv;
-  buildChart(tvSym, iv);
+  loadTVScript(() => createWidget(tvSym, iv));
 }
 
 // Indicators toggle
