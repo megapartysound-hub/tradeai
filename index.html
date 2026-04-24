@@ -1362,6 +1362,20 @@ async function updateRealPrice(sym) {
   updateAnalysisBadges(sym);
 }
 
+// ======================================
+// AUTO REFRESH PRECIOS (TIEMPO REAL)
+// ======================================
+
+let priceInterval = null;
+
+function startPriceUpdates() {
+  if (priceInterval) clearInterval(priceInterval);
+
+  // actualiza cada 5 segundos
+  priceInterval = setInterval(() => {
+    updateRealPrice(currentSymbol);
+  }, 5000);
+}
 function updateAnalysisBadges(sym) {
   const trendEl = document.getElementById('badge-trend');
   const rsiEl = document.getElementById('badge-rsi');
@@ -1714,6 +1728,9 @@ async function updateHeaderTickers() {
 // INIT
 // ============================================================
 window.addEventListener('load', () => {
+
+startPriceUpdates();
+
   // Check session validity
   const session = getSession();
   if (!isSessionValid(session)) {
