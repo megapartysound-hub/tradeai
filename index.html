@@ -1218,8 +1218,8 @@ function switchSymbol(sym) {
     if (el.querySelector('.watch-sym')?.textContent === sym) el.classList.add('active');
   });
 
-  // Simulate price update
-  simulatePriceUpdate(sym);
+  // Actualizar datos reales sin tocar TradingView
+  updateRealPrice(sym);
   updateAnalysisBadges(sym);
 
   initTradingView(sym, currentInterval);
@@ -1251,52 +1251,183 @@ document.querySelectorAll('.ind-item').forEach(el => {
 });
 
 // ============================================================
-// SIMULATED PRICE DATA
+// FINNHUB REAL DATA (precios reales sin tocar TradingView)
 // ============================================================
-const priceData = {
-  AAPL: { price: 173.42, chg: +1.24 },
-  TSLA: { price: 248.10, chg: -0.87 },
-  NVDA: { price: 875.63, chg: +2.13 },
-  MSFT: { price: 415.28, chg: +0.56 },
-  GOOGL: { price: 162.87, chg: -0.33 },
-  AMZN: { price: 192.54, chg: +1.78 },
-  BTCUSD: { price: 68240, chg: +3.45 },
-  META: { price: 548.20, chg: +0.91 },
+
+// IMPORTANTE: pegá tu API Key de Finnhub entre las comillas.
+// Ejemplo: const FINNHUB_API_KEY = "abc123...";
+const FINNHUB_API_KEY = "d7klcm1r01qiqbcus37gd7klcm1r01qiqbcus380";
+
+let latestMarketData = {
+  symbol: 'AAPL',
+  finnhubSymbol: 'AAPL',
+  price: null,
+  change: null,
+  percent: null,
+  open: null,
+  high: null,
+  low: null,
+  previousClose: null,
+  updatedAt: null,
+  source: 'Finnhub'
 };
 
-function simulatePriceUpdate(sym) {
-  const d = priceData[sym] || { price: (Math.random() * 500 + 50).toFixed(2), chg: (Math.random() * 4 - 2).toFixed(2) };
+function formatFinnhubSymbol(symbol) {
+  const s = (symbol || 'AAPL').toUpperCase().trim();
+
+  // Acciones USA: AAPL, TSLA, NVDA, MSFT, etc.
+  if (s === 'BTCUSD' || s === 'BTC' || s === 'BTCUSDT') return 'BINANCE:BTCUSDT';
+  if (s === 'ETHUSD' || s === 'ETH' || s === 'ETHUSDT') return 'BINANCE:ETHUSDT';
+  if (s === 'GOLD' || s === 'XAUUSD') return 'OANDA:XAU_USD';
+  if (s.includes(':')) return s;
+
+  return s;
+}
+
+async function getRealPrice(symbol) {
+  if (!FINNHUB_API_KEY || FINNHUB_API_KEY.includes('PEGÁ_TU_API_KEY')) {
+    console.warn('Falta configurar FINNHUB_API_KEY.');
+    return null;
+  }
+
+  try {
+    const finnhubSymbol = formatFinnhubSymbol(symbol);
+    const url = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(finnhubSymbol)}&token=${FINNHUB_API_KEY}`;
+    const res = await fetch(url);
+    const data = await res.json();
+
+    if (!res.ok || !data || data.c === 0 || data.c === null || data.c === undefined) {
+      console.warn('Finnhub no devolvió precio válido para:', symbol, data);
+      return null;
+    }
+
+    return {
+      symbol: symbol,
+      finnhubSymbol: finnhubSymbol,
+      price: Number(data.c),
+      change: Number(data.d),
+      percent: Number(data.dp),
+      open: Number(data.o),
+      high: Number(data.h),
+      low: Number(data.l),
+      previousClose: Number(data.pc),
+      updatedAt: new Date().toLocaleString('es-AR'),
+      source: 'Finnhub'
+    };
+  } catch (e) {
+    console.error('Error Finnhub:', e);
+    return null;
+  }
+}
+
+function paintPriceOnScreen(data) {
   const priceEl = document.getElementById('currentPrice');
   const chgEl = document.getElementById('currentChange');
-  const chg = parseFloat(d.chg);
-  priceEl.textContent = `$${d.price}`;
-  priceEl.style.color = chg >= 0 ? 'var(--green)' : 'var(--red)';
-  chgEl.textContent = `${chg >= 0 ? '+' : ''}${d.chg}%`;
-  chgEl.style.color = chg >= 0 ? 'var(--green)' : 'var(--red)';
+
+  if (!priceEl || !chgEl || !data) return;
+
+  const price = Number(data.price);
+  const change = Number(data.change);
+  const percent = Number(data.percent);
+  const isUp = change >= 0;
+
+  priceEl.textContent = Number.isFinite(price) ? `$${price.toFixed(2)}` : '—';
+  priceEl.style.color = isUp ? 'var(--green)' : 'var(--red)';
+
+  if (Number.isFinite(percent)) {
+    chgEl.textContent = `${isUp ? '+' : ''}${percent.toFixed(2)}%`;
+  } else {
+    chgEl.textContent = '—';
+  }
+  chgEl.style.color = isUp ? 'var(--green)' : 'var(--red)';
+}
+
+async function updateRealPrice(sym) {
+  const priceEl = document.getElementById('currentPrice');
+  const chgEl = document.getElementById('currentChange');
+
+  if (priceEl) priceEl.textContent = 'cargando...';
+  if (chgEl) chgEl.textContent = 'Finnhub';
+
+  const data = await getRealPrice(sym);
+
+  if (!data) {
+    if (priceEl) priceEl.textContent = 'sin datos';
+    if (chgEl) chgEl.textContent = 'revisar API key';
+    return;
+  }
+
+  latestMarketData = data;
+  paintPriceOnScreen(data);
+  updateAnalysisBadges(sym);
 }
 
 function updateAnalysisBadges(sym) {
-  const trends = ['ALCISTA', 'BAJISTA', 'LATERAL', 'ALCISTA'];
-  const rsiBadge = ['Sobrecomprado', 'Neutral', 'Sobrevendido', 'Neutral'];
-  const signals = ['COMPRA', 'VENTA', 'ESPERAR', 'COMPRA'];
-  const i = Math.floor(Math.random() * 4);
-  const d = priceData[sym] || { price: 100 };
-  const price = parseFloat(d.price);
-
   const trendEl = document.getElementById('badge-trend');
   const rsiEl = document.getElementById('badge-rsi');
   const sigEl = document.getElementById('badge-signal');
   const supEl = document.getElementById('badge-support');
   const resEl = document.getElementById('badge-resistance');
 
-  trendEl.textContent = trends[i];
-  trendEl.className = 'a-card-val ' + (trends[i]==='ALCISTA'?'bullish':trends[i]==='BAJISTA'?'bearish':'neutral');
-  rsiEl.textContent = rsiBadge[i];
-  rsiEl.className = 'a-card-val ' + (rsiBadge[i]==='Sobrecomprado'?'bearish':rsiBadge[i]==='Sobrevendido'?'bullish':'neutral');
-  sigEl.textContent = signals[i];
-  sigEl.className = 'a-card-val ' + (signals[i]==='COMPRA'?'bullish':signals[i]==='VENTA'?'bearish':'neutral');
-  supEl.textContent = '$' + (price * 0.95).toFixed(2);
-  resEl.textContent = '$' + (price * 1.06).toFixed(2);
+  const price = Number(latestMarketData.price);
+  const change = Number(latestMarketData.change);
+
+  if (trendEl) {
+    if (!Number.isFinite(change)) {
+      trendEl.textContent = 'REAL';
+      trendEl.className = 'a-card-val neutral';
+    } else if (change > 0) {
+      trendEl.textContent = 'ALCISTA';
+      trendEl.className = 'a-card-val bullish';
+    } else if (change < 0) {
+      trendEl.textContent = 'BAJISTA';
+      trendEl.className = 'a-card-val bearish';
+    } else {
+      trendEl.textContent = 'LATERAL';
+      trendEl.className = 'a-card-val neutral';
+    }
+  }
+
+  if (rsiEl) {
+    rsiEl.textContent = 'TV';
+    rsiEl.className = 'a-card-val neutral';
+  }
+
+  if (sigEl) {
+    if (!Number.isFinite(change)) {
+      sigEl.textContent = '—';
+      sigEl.className = 'a-card-val neutral';
+    } else if (change > 0) {
+      sigEl.textContent = 'POSITIVA';
+      sigEl.className = 'a-card-val bullish';
+    } else if (change < 0) {
+      sigEl.textContent = 'NEGATIVA';
+      sigEl.className = 'a-card-val bearish';
+    } else {
+      sigEl.textContent = 'NEUTRAL';
+      sigEl.className = 'a-card-val neutral';
+    }
+  }
+
+  if (supEl) supEl.textContent = Number.isFinite(price) ? '$' + (price * 0.97).toFixed(2) : '—';
+  if (resEl) resEl.textContent = Number.isFinite(price) ? '$' + (price * 1.03).toFixed(2) : '—';
+}
+
+function buildMarketContextForAI() {
+  const d = latestMarketData || {};
+  return `
+Datos reales disponibles desde ${d.source || 'Finnhub'}:
+Símbolo mostrado: ${currentSymbol}
+Símbolo usado en datos: ${d.finnhubSymbol || 'sin dato'}
+Precio actual: ${d.price ?? 'sin dato'}
+Cambio del día: ${d.change ?? 'sin dato'}
+Cambio porcentual: ${d.percent ?? 'sin dato'}%
+Apertura: ${d.open ?? 'sin dato'}
+Máximo del día: ${d.high ?? 'sin dato'}
+Mínimo del día: ${d.low ?? 'sin dato'}
+Cierre previo: ${d.previousClose ?? 'sin dato'}
+Actualizado: ${d.updatedAt ?? 'sin dato'}
+`;
 }
 
 // ============================================================
@@ -1457,11 +1588,15 @@ function sendAIMessage(userText) {
 }
 
 async function callClaudeAPI(userText) {
+  const marketContext = buildMarketContextForAI();
+
   const systemPrompt = `Sos un experto analista de trading y mercados financieros. El usuario está mirando el gráfico de ${currentSymbol} en temporalidad ${currentInterval} con los indicadores: ${activeIndicators.join(', ')}.
+
+${marketContext}
 
 Respondé siempre en español, de forma clara, técnica y accionable. Usá formato markdown: **negrita** para niveles de precio importantes, *cursiva* para alertas o puntos de atención, listas para múltiples puntos, y emojis con moderación (📈 📉 ⚡ 🎯 ⚠️).
 
-Sos conciso pero completo. Cuando des niveles de precio, sé específico. Cuando des señales, indicá siempre el contexto de riesgo. No inventes datos exactos en tiempo real, pero usá tu conocimiento técnico para proyectar escenarios plausibles basados en el análisis técnico del activo mencionado.`;
+Usá los datos reales disponibles como contexto principal. Si un dato aparece como "sin dato", aclaralo y no lo inventes. Cuando des señales, indicá siempre el contexto de riesgo.`;
 
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -1549,6 +1684,32 @@ function setLoading(state) {
   document.getElementById('sendBtn').disabled = state;
 }
 
+
+async function updateHeaderTickers() {
+  const items = [
+    { id: 'spy', symbol: 'SPY' },
+    { id: 'qqq', symbol: 'QQQ' },
+    { id: 'btc', symbol: 'BINANCE:BTCUSDT' },
+    { id: 'gold', symbol: 'OANDA:XAU_USD' }
+  ];
+
+  for (const item of items) {
+    const el = document.getElementById(`t-${item.id}`);
+    if (!el) continue;
+
+    const data = await getRealPrice(item.symbol);
+    if (!data || !Number.isFinite(data.percent)) {
+      el.textContent = '—';
+      el.className = 'down';
+      continue;
+    }
+
+    const up = data.percent >= 0;
+    el.textContent = `${up ? '+' : ''}${data.percent.toFixed(2)}%`;
+    el.className = up ? 'up' : 'down';
+  }
+}
+
 // ============================================================
 // INIT
 // ============================================================
@@ -1562,7 +1723,7 @@ window.addEventListener('load', () => {
     if (session.type === 'trial') startTrialTimer(session.expiresAt);
   }
 
-  simulatePriceUpdate('AAPL');
+  updateRealPrice('AAPL');
   updateAnalysisBadges('AAPL');
 
   // Show API key modal if not configured
@@ -1575,17 +1736,9 @@ window.addEventListener('load', () => {
 
   // Init TradingView se llama desde showApp()
 
-  // Simulate ticker updates
-  setInterval(() => {
-    ['spy','qqq','btc','gold'].forEach(id => {
-      const el = document.getElementById(`t-${id}`);
-      if (!el) return;
-      const chg = (Math.random() * 3 - 1).toFixed(2);
-      const up = parseFloat(chg) >= 0;
-      el.textContent = `${up?'+':''}${chg}%`;
-      el.className = up ? 'up' : 'down';
-    });
-  }, 5000);
+  // Ticker superior con datos reales de Finnhub, sin simulaciones
+  updateHeaderTickers();
+  setInterval(updateHeaderTickers, 30000);
 });
 </script>
 </body>
