@@ -1039,6 +1039,11 @@ function showAccessScreen(msg) {
 function showApp() {
   document.getElementById('accessScreen').style.display = 'none';
   document.getElementById('appBody').style.display = 'grid';
+  // Init TradingView después de que el contenedor sea visible
+  setTimeout(() => {
+    initTradingView('AAPL', 'D');
+    document.getElementById('chartOverlay').style.display = 'flex';
+  }, 100);
 }
 
 function submitAccessCode() {
@@ -1554,9 +1559,7 @@ window.addEventListener('load', () => {
     btn.textContent = '🔑 API Key ✓';
   }
 
-  // Init TradingView (siempre funciona con el embed público)
-  initTradingView('AAPL', 'D');
-  document.getElementById('chartOverlay').style.display = 'flex';
+  // Init TradingView se llama desde showApp()
 
   // Simulate ticker updates
   setInterval(() => {
