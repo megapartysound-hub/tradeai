@@ -1171,11 +1171,25 @@ function adminGenerate(type) {
 function formatTradingViewSymbol(symbol) {
   const s = (symbol || 'AAPL').toUpperCase().trim();
 
-  if (s === 'BTCUSD' || s === 'BTC') return 'BINANCE:BTCUSDT';
-  if (s === 'ETHUSD' || s === 'ETH') return 'BINANCE:ETHUSDT';
+  // Cripto / commodities
+  if (s === 'BTCUSD' || s === 'BTC' || s === 'BTCUSDT') return 'BINANCE:BTCUSDT';
+  if (s === 'ETHUSD' || s === 'ETH' || s === 'ETHUSDT') return 'BINANCE:ETHUSDT';
   if (s === 'GOLD' || s === 'XAUUSD') return 'OANDA:XAUUSD';
   if (s.includes(':')) return s;
 
+  // Acciones que cotizan en NYSE.
+  // Esto evita que TradingView busque por error NASDAQ:KO, NASDAQ:DIS, etc.
+  const nyseSymbols = [
+    'KO','DIS','BA','NKE','JPM','V','MA','WMT','MCD','IBM',
+    'BAC','C','GS','MS','WFC','AXP','HD','LOW','TGT','COST',
+    'PG','JNJ','PFE','MRK','UNH','CVX','XOM','BP','SHEL','GE',
+    'F','GM','CAT','DE','MMM','UPS','FDX','T','VZ','ORCL',
+    'CRM','SHOP','UBER','BABA','NIO','RBLX','SNAP','SQ','PYPL','PLTR'
+  ];
+
+  if (nyseSymbols.includes(s)) return 'NYSE:' + s;
+
+  // Por defecto dejamos NASDAQ para AAPL, TSLA, NVDA, MSFT, GOOGL, AMZN, META, etc.
   return 'NASDAQ:' + s;
 }
 
