@@ -1043,7 +1043,7 @@ function showApp() {
   setTimeout(() => {
     initTradingView('AAPL', 'D');
     document.getElementById('chartOverlay').style.display = 'flex';
-  }, 100);
+  }, 500);
 }
 
 function submitAccessCode() {
@@ -1135,7 +1135,69 @@ function adminGenerate(type) {
 // ============================================================
 // TRADINGVIEW WIDGET (iframe embed — funciona sin servidor)
 // ============================================================
+function initTradingView(symbol, interval) {
+  const container = document.getElementById('tradingview-widget');
 
+  if (!container) {
+    console.error('Contenedor tradingview-widget no encontrado');
+    return;
+  }
+
+  container.innerHTML = '';
+
+  const widgetContainer = document.createElement('div');
+  widgetContainer.className = 'tradingview-widget-container';
+  widgetContainer.style.height = '100%';
+  widgetContainer.style.width = '100%';
+
+  const chartDiv = document.createElement('div');
+  chartDiv.className = 'tradingview-widget-container__widget';
+  chartDiv.style.height = '100%';
+  chartDiv.style.width = '100%';
+
+  widgetContainer.appendChild(chartDiv);
+  container.appendChild(widgetContainer);
+
+  const studyMap = {
+    RSI: 'RSI@tv-basicstudies',
+    MACD: 'MACD@tv-basicstudies',
+    BB: 'BB@tv-basicstudies',
+    EMA50: 'MAExp@tv-basicstudies',
+    EMA200: 'MAExp@tv-basicstudies',
+    VWAP: 'VWAP@tv-basicstudies'
+  };
+
+  const studies = activeIndicators
+    .map(i => studyMap[i])
+    .filter(Boolean);
+
+  const script = document.createElement('script');
+  script.type = 'text/javascript';
+  script.async = true;
+  script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js';
+  script.innerHTML = JSON.stringify({
+    autosize: true,
+    symbol: symbol || 'AAPL',
+    interval: interval || 'D',
+    timezone: 'America/Argentina/Buenos_Aires',
+    theme: 'dark',
+    style: '1',
+    locale: 'es',
+    toolbar_bg: '#0b0f1e',
+    enable_publishing: false,
+    withdateranges: true,
+    hide_side_toolbar: false,
+    allow_symbol_change: true,
+    studies: studies,
+    support_host: 'https://www.tradingview.com'
+  });
+
+  widgetContainer.appendChild(script);
+
+  document.getElementById('ov-interval').textContent = interval || 'D';
+  document.getElementById('ov-indicators').textContent =
+    activeIndicators.length ? activeIndicators.join(', ') : 'ninguno';
+}
 
 function loadSymbol() {
   const val = document.getElementById('symbolInput').value.trim().toUpperCase();
@@ -1496,8 +1558,6 @@ window.addEventListener('load', () => {
     showAccessScreen();
   } else {
     showApp();
-initTradingView("AAPL", "D");
-}
     if (session.type === 'trial') startTrialTimer(session.expiresAt);
   }
 
