@@ -82,22 +82,27 @@ const marked = { parse: (text) => {
 
   .ticker-bar {
     flex: 1;
-    max-width: 560px;
+    max-width: 720px;
+    min-width: 280px;
     overflow: hidden;
     font-size: 0.72rem;
     color: var(--muted);
     white-space: nowrap;
     position: relative;
-    mask-image: linear-gradient(to right, transparent, #000 8%, #000 92%, transparent);
-    -webkit-mask-image: linear-gradient(to right, transparent, #000 8%, #000 92%, transparent);
+    margin: 0 18px;
+    border-left: 1px solid rgba(30,42,66,.55);
+    border-right: 1px solid rgba(30,42,66,.55);
+    padding: 2px 0;
+    mask-image: linear-gradient(to right, transparent, #000 7%, #000 93%, transparent);
+    -webkit-mask-image: linear-gradient(to right, transparent, #000 7%, #000 93%, transparent);
   }
 
   .ticker-track {
     display: inline-flex;
     align-items: center;
-    gap: 26px;
+    gap: 28px;
     min-width: max-content;
-    animation: tickerScroll 34s linear infinite;
+    animation: tickerScroll 38s linear infinite;
   }
 
   .ticker-bar:hover .ticker-track { animation-play-state: paused; }
@@ -564,15 +569,15 @@ const marked = { parse: (text) => {
   </div>
   <div class="ticker-bar" id="tickerBar">
     <div class="ticker-track" id="tickerTrack">
-      <div class="ticker-item" data-ticker-id="spy"><span class="sym">SPY</span><span class="ticker-price">—</span><span class="up ticker-change">—</span></div>
-      <div class="ticker-item" data-ticker-id="qqq"><span class="sym">QQQ</span><span class="ticker-price">—</span><span class="up ticker-change">—</span></div>
-      <div class="ticker-item" data-ticker-id="aapl"><span class="sym">AAPL</span><span class="ticker-price">—</span><span class="up ticker-change">—</span></div>
-      <div class="ticker-item" data-ticker-id="tsla"><span class="sym">TSLA</span><span class="ticker-price">—</span><span class="up ticker-change">—</span></div>
-      <div class="ticker-item" data-ticker-id="nvda"><span class="sym">NVDA</span><span class="ticker-price">—</span><span class="up ticker-change">—</span></div>
-      <div class="ticker-item" data-ticker-id="msft"><span class="sym">MSFT</span><span class="ticker-price">—</span><span class="up ticker-change">—</span></div>
-      <div class="ticker-item" data-ticker-id="btc"><span class="sym">BTC</span><span class="ticker-price">—</span><span class="up ticker-change">—</span></div>
-      <div class="ticker-item" data-ticker-id="eth"><span class="sym">ETH</span><span class="ticker-price">—</span><span class="up ticker-change">—</span></div>
-      <div class="ticker-item" data-ticker-id="gold"><span class="sym">GOLD</span><span class="ticker-price">—</span><span class="up ticker-change">—</span></div>
+      <div class="ticker-item" data-ticker-id="spy"><span class="sym">SPY</span><span class="ticker-price">—</span><span class="up ticker-change">cargando</span></div>
+      <div class="ticker-item" data-ticker-id="qqq"><span class="sym">QQQ</span><span class="ticker-price">—</span><span class="up ticker-change">cargando</span></div>
+      <div class="ticker-item" data-ticker-id="aapl"><span class="sym">AAPL</span><span class="ticker-price">—</span><span class="up ticker-change">cargando</span></div>
+      <div class="ticker-item" data-ticker-id="tsla"><span class="sym">TSLA</span><span class="ticker-price">—</span><span class="up ticker-change">cargando</span></div>
+      <div class="ticker-item" data-ticker-id="nvda"><span class="sym">NVDA</span><span class="ticker-price">—</span><span class="up ticker-change">cargando</span></div>
+      <div class="ticker-item" data-ticker-id="msft"><span class="sym">MSFT</span><span class="ticker-price">—</span><span class="up ticker-change">cargando</span></div>
+      <div class="ticker-item" data-ticker-id="btc"><span class="sym">BTC</span><span class="ticker-price">—</span><span class="up ticker-change">cargando</span></div>
+      <div class="ticker-item" data-ticker-id="eth"><span class="sym">ETH</span><span class="ticker-price">—</span><span class="up ticker-change">cargando</span></div>
+      <div class="ticker-item" data-ticker-id="gold"><span class="sym">GOLD</span><span class="ticker-price">—</span><span class="up ticker-change">cargando</span></div>
     </div>
   </div>
   <div class="header-controls">
@@ -1713,12 +1718,21 @@ function setLoading(state) {
 }
 
 
+let headerTickerStarted = false;
+let mainPriceInterval = null;
+
 function duplicateTickerForSmoothScroll() {
   const track = document.getElementById('tickerTrack');
   if (!track || track.dataset.duplicated === 'yes') return;
-
   track.innerHTML = track.innerHTML + track.innerHTML;
   track.dataset.duplicated = 'yes';
+}
+
+function startMainPriceUpdates() {
+  if (mainPriceInterval) clearInterval(mainPriceInterval);
+  mainPriceInterval = setInterval(() => {
+    updateRealPrice(currentSymbol);
+  }, 8000);
 }
 
 async function updateHeaderTickers() {
@@ -1755,7 +1769,9 @@ async function updateHeaderTickers() {
       const price = Number(data.price);
 
       if (priceEl) {
-        priceEl.textContent = price >= 1000 ? `$${price.toLocaleString('en-US', { maximumFractionDigits: 0 })}` : `$${price.toFixed(2)}`;
+        priceEl.textContent = price >= 1000
+          ? `$${price.toLocaleString('en-US', { maximumFractionDigits: 0 })}`
+          : `$${price.toFixed(2)}`;
       }
 
       if (changeEl) {
@@ -1764,6 +1780,15 @@ async function updateHeaderTickers() {
       }
     });
   }
+}
+
+function startHeaderRealtimeTicker() {
+  if (headerTickerStarted) return;
+  headerTickerStarted = true;
+
+  duplicateTickerForSmoothScroll();
+  updateHeaderTickers();
+  setInterval(updateHeaderTickers, 30000);
 }
 
 // ============================================================
@@ -1792,10 +1817,9 @@ window.addEventListener('load', () => {
 
   // Init TradingView se llama desde showApp()
 
-  // Ticker superior en tiempo real con movimiento tipo cinta
-  duplicateTickerForSmoothScroll();
-  updateHeaderTickers();
-  setInterval(updateHeaderTickers, 30000);
+  // Header superior en tiempo real + refresco del precio principal
+  startHeaderRealtimeTicker();
+  startMainPriceUpdates();
 });
 </script>
 </body>
