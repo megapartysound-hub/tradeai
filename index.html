@@ -689,6 +689,7 @@ const marked = { parse: (text) => {
       <div style="display:flex;gap:8px;">
         <button class="btn-small" style="background:var(--surface2);color:var(--accent);border:1px solid var(--border);" onclick="analyzeCurrentChart()">⚡ Analizar con AI</button>
         <button class="btn-small" style="background:var(--surface2);color:var(--accent2);border:1px solid var(--border);" onclick="projectChart()">📈 Proyectar</button>
+        <button class="btn-small" style="background:var(--surface2);color:var(--yellow);border:1px solid var(--border);" onclick="promptCreatePriceAlert()">🔔 Alerta</button>
       </div>
     </div>
 
@@ -1267,6 +1268,7 @@ function switchSymbol(sym) {
 
   // Actualizar datos reales sin tocar TradingView
   updateRealPrice(sym);
+  startRealtimeFinnhub(sym);
   updateAnalysisBadges(sym);
 
   initTradingView(sym, currentInterval);
@@ -1409,6 +1411,123 @@ async function updateRealPrice(sym) {
   updateAnalysisBadges(sym);
 }
 
+
+// ============================================================
+// FINNHUB WEBSOCKET + WATCHLIST VIVA + ALERTAS
+// ============================================================
+let finnhubWS = null;
+let finnhubWSCurrentSymbol = null;
+let watchlistLiveInterval = null;
+let priceAlerts = [];
+
+function startRealtimeFinnhub(symbol) {
+  if (!FINNHUB_API_KEY || FINNHUB_API_KEY.includes('PEGÁ_TU_API_KEY')) return;
+
+  const finnhubSymbol = formatFinnhubSymbol(symbol);
+
+  if (finnhubWS) {
+    try { finnhubWS.close(); } catch (e) {}
+    finnhubWS = null;
+  }
+
+  finnhubWSCurrentSymbol = finnhubSymbol;
+  finnhubWS = new WebSocket(`wss://ws.finnhub.io?token=${FINNHUB_API_KEY}`);
+
+  finnhubWS.onopen = () => {
+    console.log('🟢 Finnhub WebSocket conectado:', finnhubSymbol);
+    finnhubWS.send(JSON.stringify({ type: 'subscribe', symbol: finnhubSymbol }));
+  };
+
+  finnhubWS.onmessage = (event) => {
+    let msg;
+    try { msg = JSON.parse(event.data); } catch (e) { return; }
+
+    if (msg.type === 'trade' && Array.isArray(msg.data) && msg.data.length > 0) {
+      const last = msg.data[msg.data.length - 1];
+      const livePrice = Number(last.p);
+      const liveTime = last.t ? new Date(last.t).toLocaleString('es-AR') : new Date().toLocaleString('es-AR');
+
+      if (!Number.isFinite(livePrice)) return;
+
+      latestMarketData.price = livePrice;
+      latestMarketData.updatedAt = liveTime;
+      latestMarketData.source = 'Finnhub WebSocket';
+
+      if (Number.isFinite(Number(latestMarketData.previousClose)) && latestMarketData.previousClose > 0) {
+        latestMarketData.change = livePrice - latestMarketData.previousClose;
+        latestMarketData.percent = ((livePrice - latestMarketData.previousClose) / latestMarketData.previousClose) * 100;
+      }
+
+      paintPriceOnScreen(latestMarketData);
+      updateAnalysisBadges(currentSymbol);
+      checkPriceAlerts();
+    }
+  };
+
+  finnhubWS.onerror = (err) => {
+    console.warn('Finnhub WebSocket error. Se mantiene REST como respaldo.', err);
+  };
+
+  finnhubWS.onclose = () => {
+    console.log('🔴 Finnhub WebSocket cerrado');
+  };
+}
+
+async function updateWatchlistRealtime() {
+  const rows = Array.from(document.querySelectorAll('.watch-item'));
+  for (const el of rows) {
+    const symEl = el.querySelector('.watch-sym');
+    const chgEl = el.querySelector('.watch-chg');
+    if (!symEl || !chgEl) continue;
+
+    const sym = symEl.textContent.trim().toUpperCase();
+    const data = await getRealPrice(sym);
+    if (!data || !Number.isFinite(data.percent)) continue;
+
+    const up = data.percent >= 0;
+    chgEl.textContent = `${up ? '+' : ''}${data.percent.toFixed(2)}%`;
+    chgEl.className = 'watch-chg ' + (up ? 'up' : 'down');
+  }
+}
+
+function startWatchlistRealtime() {
+  updateWatchlistRealtime();
+  if (watchlistLiveInterval) clearInterval(watchlistLiveInterval);
+  watchlistLiveInterval = setInterval(updateWatchlistRealtime, 15000);
+}
+
+function promptCreatePriceAlert() {
+  const current = Number(latestMarketData.price);
+  const suggestion = Number.isFinite(current) ? current.toFixed(2) : '';
+  const input = prompt(`Crear alerta para ${currentSymbol}.\nIngresá el precio objetivo:`, suggestion);
+  if (input === null) return;
+
+  const target = Number(String(input).replace(',', '.'));
+  if (!Number.isFinite(target) || target <= 0) {
+    alert('Precio inválido. Probá de nuevo con un número.');
+    return;
+  }
+
+  const direction = Number.isFinite(current) && target < current ? 'below' : 'above';
+  priceAlerts.push({ symbol: currentSymbol, price: target, direction, triggered: false });
+  alert(`🔔 Alerta creada: ${currentSymbol} ${direction === 'above' ? 'rompe/sube a' : 'cae a'} $${target.toFixed(2)}`);
+}
+
+function checkPriceAlerts() {
+  const price = Number(latestMarketData.price);
+  if (!Number.isFinite(price)) return;
+
+  priceAlerts.forEach(a => {
+    if (a.triggered || a.symbol !== currentSymbol) return;
+
+    const hit = a.direction === 'above' ? price >= a.price : price <= a.price;
+    if (hit) {
+      a.triggered = true;
+      alert(`🚨 ALERTA ${a.symbol}: precio actual $${price.toFixed(2)} alcanzó $${a.price.toFixed(2)}`);
+    }
+  });
+}
+
 function updateAnalysisBadges(sym) {
   const trendEl = document.getElementById('badge-trend');
   const rsiEl = document.getElementById('badge-rsi');
@@ -1460,20 +1579,96 @@ function updateAnalysisBadges(sym) {
   if (resEl) resEl.textContent = Number.isFinite(price) ? '$' + (price * 1.03).toFixed(2) : '—';
 }
 
+function calculateMarketLevels(data) {
+  const price = Number(data?.price);
+  const high = Number(data?.high);
+  const low = Number(data?.low);
+  const open = Number(data?.open);
+  const previousClose = Number(data?.previousClose);
+
+  if (!Number.isFinite(price)) {
+    return {
+      support1: 'sin dato', support2: 'sin dato',
+      resistance1: 'sin dato', resistance2: 'sin dato',
+      riskRange: 'sin dato'
+    };
+  }
+
+  const support1 = Number.isFinite(low) ? low : price * 0.97;
+  const support2 = Number.isFinite(previousClose) ? previousClose : price * 0.94;
+  const resistance1 = Number.isFinite(high) ? high : price * 1.03;
+  const resistance2 = Number.isFinite(open) && open > price ? open : price * 1.06;
+  const riskRange = Number.isFinite(high) && Number.isFinite(low) && price > 0
+    ? (((high - low) / price) * 100).toFixed(2) + '%'
+    : 'sin dato';
+
+  return {
+    support1: Number(support1).toFixed(2),
+    support2: Number(support2).toFixed(2),
+    resistance1: Number(resistance1).toFixed(2),
+    resistance2: Number(resistance2).toFixed(2),
+    riskRange
+  };
+}
+
 function buildMarketContextForAI() {
   const d = latestMarketData || {};
+  const levels = calculateMarketLevels(d);
+  const price = Number(d.price);
+  const change = Number(d.change);
+  const percent = Number(d.percent);
+
+  const trend = !Number.isFinite(change)
+    ? 'sin dato'
+    : change > 0
+      ? 'ALCISTA intradía'
+      : change < 0
+        ? 'BAJISTA intradía'
+        : 'LATERAL intradía';
+
+  const momentum = !Number.isFinite(percent)
+    ? 'sin dato'
+    : Math.abs(percent) >= 2
+      ? 'fuerte'
+      : Math.abs(percent) >= 0.75
+        ? 'moderado'
+        : 'débil / neutral';
+
   return `
-Datos reales disponibles desde ${d.source || 'Finnhub'}:
+DATOS REALES DISPONIBLES PARA EL ANÁLISIS:
+Fuente de datos: ${d.source || 'Finnhub'}
 Símbolo mostrado: ${currentSymbol}
-Símbolo usado en datos: ${d.finnhubSymbol || 'sin dato'}
-Precio actual: ${d.price ?? 'sin dato'}
-Cambio del día: ${d.change ?? 'sin dato'}
-Cambio porcentual: ${d.percent ?? 'sin dato'}%
+Símbolo de datos usado: ${d.finnhubSymbol || 'sin dato'}
+Temporalidad del gráfico: ${currentInterval}
+Indicadores activos en pantalla: ${activeIndicators.join(', ') || 'ninguno'}
+
+PRECIO Y SESIÓN:
+Precio actual / último tick: ${Number.isFinite(price) ? price : 'sin dato'}
+Cambio del día: ${Number.isFinite(change) ? change : 'sin dato'}
+Cambio porcentual: ${Number.isFinite(percent) ? percent + '%' : 'sin dato'}
 Apertura: ${d.open ?? 'sin dato'}
 Máximo del día: ${d.high ?? 'sin dato'}
 Mínimo del día: ${d.low ?? 'sin dato'}
 Cierre previo: ${d.previousClose ?? 'sin dato'}
 Actualizado: ${d.updatedAt ?? 'sin dato'}
+
+LECTURA AUTOMÁTICA:
+Tendencia intradía aproximada: ${trend}
+Momentum por variación porcentual: ${momentum}
+Rango intradía / volatilidad simple: ${levels.riskRange}
+
+NIVELES CALCULADOS AUTOMÁTICAMENTE:
+Soporte 1 aproximado: ${levels.support1}
+Soporte 2 aproximado: ${levels.support2}
+Resistencia 1 aproximada: ${levels.resistance1}
+Resistencia 2 aproximada: ${levels.resistance2}
+
+INSTRUCCIONES PARA RESPONDER:
+- Usar estos datos reales como base del análisis.
+- No inventar cotizaciones ni indicadores no disponibles.
+- Diferenciar dato real, lectura técnica e hipótesis.
+- Incluir entrada posible, stop loss, take profit y riesgo/recompensa si el usuario pide señal operativa.
+- Advertir si el mercado está cerrado, si el dato puede venir demorado o si falta confirmación del gráfico.
 `;
 }
 
@@ -1745,8 +1940,9 @@ function duplicateTickerForSmoothScroll() {
 function startMainPriceUpdates() {
   if (mainPriceInterval) clearInterval(mainPriceInterval);
   mainPriceInterval = setInterval(() => {
+    // Respaldo REST: mantiene cambio %, high/low/open actualizados aunque WebSocket no entregue ticks.
     updateRealPrice(currentSymbol);
-  }, 8000);
+  }, 20000);
 }
 
 async function updateHeaderTickers() {
@@ -1819,6 +2015,7 @@ window.addEventListener('load', () => {
   }
 
   updateRealPrice('AAPL');
+  startRealtimeFinnhub('AAPL');
   updateAnalysisBadges('AAPL');
 
   // Show API key modal if not configured
@@ -1834,6 +2031,7 @@ window.addEventListener('load', () => {
   // Header superior en tiempo real + refresco del precio principal
   startHeaderRealtimeTicker();
   startMainPriceUpdates();
+  startWatchlistRealtime();
 });
 </script>
 </body>
