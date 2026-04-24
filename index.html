@@ -542,10 +542,10 @@ const marked = { parse: (text) => {
     TRADE<span style="color:var(--accent2)">AI</span>
   </div>
   <div class="ticker-bar" id="tickerBar">
-    <div class="ticker-item"><span class="sym">SPY</span><span class="up" id="t-spy">+0.00%</span></div>
-    <div class="ticker-item"><span class="sym">QQQ</span><span class="up" id="t-qqq">+0.00%</span></div>
-    <div class="ticker-item"><span class="sym">BTC</span><span class="up" id="t-btc">+0.00%</span></div>
-    <div class="ticker-item"><span class="sym">GOLD</span><span class="up" id="t-gold">+0.00%</span></div>
+    <div class="ticker-item"><span class="sym">BTC</span><span class="up" id="t-btc">conectando...</span></div>
+    <div class="ticker-item"><span class="sym">ETH</span><span class="up" id="t-eth">conectando...</span></div>
+    <div class="ticker-item"><span class="sym">SOL</span><span class="up" id="t-sol">conectando...</span></div>
+    <div class="ticker-item"><span class="sym">BNB</span><span class="up" id="t-bnb">conectando...</span></div>
   </div>
   <div class="header-controls">
     <span id="trialTimer" style="display:none;font-size:.72rem;font-family:var(--font-mono);color:var(--yellow);padding:4px 10px;border:1px solid rgba(255,204,0,.3);background:rgba(255,204,0,.08);"></span>
@@ -634,6 +634,18 @@ const marked = { parse: (text) => {
         <li class="watch-item" onclick="switchSymbol('BTCUSD')">
           <div><span class="watch-sym">BTCUSD</span><br><span style="font-size:.65rem;color:var(--muted)">Bitcoin</span></div>
           <span class="watch-chg up">+3.45%</span>
+        </li>
+        <li class="watch-item" onclick="switchSymbol('ETHUSD')">
+          <div><span class="watch-sym">ETHUSD</span><br><span style="font-size:.65rem;color:var(--muted)">Ethereum</span></div>
+          <span class="watch-chg up">LIVE</span>
+        </li>
+        <li class="watch-item" onclick="switchSymbol('SOLUSD')">
+          <div><span class="watch-sym">SOLUSD</span><br><span style="font-size:.65rem;color:var(--muted)">Solana</span></div>
+          <span class="watch-chg up">LIVE</span>
+        </li>
+        <li class="watch-item" onclick="switchSymbol('BNBUSD')">
+          <div><span class="watch-sym">BNBUSD</span><br><span style="font-size:.65rem;color:var(--muted)">BNB</span></div>
+          <span class="watch-chg up">LIVE</span>
         </li>
         <li class="watch-item" onclick="switchSymbol('META')">
           <div><span class="watch-sym">META</span><br><span style="font-size:.65rem;color:var(--muted)">Meta Platforms</span></div>
@@ -935,6 +947,10 @@ let activeIndicators = ['RSI', 'MACD', 'BB'];
 let conversationHistory = [];
 let isLoading = false;
 let ANTHROPIC_API_KEY = localStorage.getItem('tradeai_apikey') || '';
+let liveSocket = null;
+let liveMarketData = {};
+let reconnectTimer = null;
+let lastLiveUpdate = null;
 
 // ============================================================
 // ACCESS CODE SYSTEM
@@ -1043,7 +1059,7 @@ function showApp() {
   setTimeout(() => {
     initTradingView('AAPL', 'D');
     document.getElementById('chartOverlay').style.display = 'flex';
-  }, 500);
+  }, 100);
 }
 
 function submitAccessCode() {
@@ -1135,6 +1151,30 @@ function adminGenerate(type) {
 // ============================================================
 // TRADINGVIEW WIDGET (iframe embed — funciona sin servidor)
 // ============================================================
+function getTradingViewSymbol(sym) {
+  const map = {
+    AAPL: 'NASDAQ:AAPL',
+    TSLA: 'NASDAQ:TSLA',
+    NVDA: 'NASDAQ:NVDA',
+    MSFT: 'NASDAQ:MSFT',
+    GOOGL: 'NASDAQ:GOOGL',
+    AMZN: 'NASDAQ:AMZN',
+    META: 'NASDAQ:META',
+    BTCUSD: 'BINANCE:BTCUSDT',
+    BTCUSDT: 'BINANCE:BTCUSDT',
+    ETHUSD: 'BINANCE:ETHUSDT',
+    ETHUSDT: 'BINANCE:ETHUSDT',
+    SOLUSD: 'BINANCE:SOLUSDT',
+    SOLUSDT: 'BINANCE:SOLUSDT',
+    BNBUSD: 'BINANCE:BNBUSDT',
+    BNBUSDT: 'BINANCE:BNBUSDT'
+  };
+
+  if (map[sym]) return map[sym];
+  if (sym.includes(':')) return sym;
+  return sym;
+}
+
 function initTradingView(symbol, interval) {
   const container = document.getElementById('tradingview-widget');
 
@@ -1145,18 +1185,11 @@ function initTradingView(symbol, interval) {
 
   container.innerHTML = '';
 
-  const widgetContainer = document.createElement('div');
-  widgetContainer.className = 'tradingview-widget-container';
-  widgetContainer.style.height = '100%';
-  widgetContainer.style.width = '100%';
-
   const chartDiv = document.createElement('div');
-  chartDiv.className = 'tradingview-widget-container__widget';
-  chartDiv.style.height = '100%';
+  chartDiv.id = 'tv_embed';
   chartDiv.style.width = '100%';
-
-  widgetContainer.appendChild(chartDiv);
-  container.appendChild(widgetContainer);
+  chartDiv.style.height = '100%';
+  container.appendChild(chartDiv);
 
   const studyMap = {
     RSI: 'RSI@tv-basicstudies',
@@ -1167,17 +1200,15 @@ function initTradingView(symbol, interval) {
     VWAP: 'VWAP@tv-basicstudies'
   };
 
-  const studies = activeIndicators
-    .map(i => studyMap[i])
-    .filter(Boolean);
+  const studies = activeIndicators.map(i => studyMap[i]).filter(Boolean);
 
   const script = document.createElement('script');
-  script.type = 'text/javascript';
-  script.async = true;
   script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js';
+  script.async = true;
+
   script.innerHTML = JSON.stringify({
     autosize: true,
-    symbol: symbol || 'AAPL',
+    symbol: getTradingViewSymbol(symbol),
     interval: interval || 'D',
     timezone: 'America/Argentina/Buenos_Aires',
     theme: 'dark',
@@ -1189,14 +1220,16 @@ function initTradingView(symbol, interval) {
     hide_side_toolbar: false,
     allow_symbol_change: true,
     studies: studies,
-    support_host: 'https://www.tradingview.com'
+    container_id: 'tv_embed'
   });
 
-  widgetContainer.appendChild(script);
+  container.appendChild(script);
 
-  document.getElementById('ov-interval').textContent = interval || 'D';
-  document.getElementById('ov-indicators').textContent =
-    activeIndicators.length ? activeIndicators.join(', ') : 'ninguno';
+  const ovInterval = document.getElementById('ov-interval');
+  const ovIndicators = document.getElementById('ov-indicators');
+
+  if (ovInterval) ovInterval.textContent = interval;
+  if (ovIndicators) ovIndicators.textContent = activeIndicators.length ? activeIndicators.join(', ') : 'ninguno';
 }
 
 function loadSymbol() {
@@ -1249,8 +1282,139 @@ document.querySelectorAll('.ind-item').forEach(el => {
   });
 });
 
+
 // ============================================================
-// SIMULATED PRICE DATA
+// REALTIME MARKET DATA — BINANCE WEBSOCKET
+// ============================================================
+const binanceSymbolMap = {
+  BTCUSD: 'BTCUSDT',
+  BTCUSDT: 'BTCUSDT',
+  ETHUSD: 'ETHUSDT',
+  ETHUSDT: 'ETHUSDT',
+  SOLUSD: 'SOLUSDT',
+  SOLUSDT: 'SOLUSDT',
+  BNBUSD: 'BNBUSDT',
+  BNBUSDT: 'BNBUSDT'
+};
+
+function formatPrice(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '—';
+  if (n >= 1000) return n.toLocaleString('en-US', { maximumFractionDigits: 2 });
+  if (n >= 1) return n.toLocaleString('en-US', { maximumFractionDigits: 2 });
+  return n.toLocaleString('en-US', { maximumFractionDigits: 6 });
+}
+
+function getLiveKeyForSymbol(sym) {
+  return binanceSymbolMap[sym] || null;
+}
+
+function startRealtimeData() {
+  if (liveSocket && (liveSocket.readyState === WebSocket.OPEN || liveSocket.readyState === WebSocket.CONNECTING)) return;
+
+  const streams = ['btcusdt@miniTicker', 'ethusdt@miniTicker', 'solusdt@miniTicker', 'bnbusdt@miniTicker'];
+  const url = 'wss://stream.binance.com:9443/stream?streams=' + streams.join('/');
+
+  try {
+    liveSocket = new WebSocket(url);
+
+    liveSocket.onopen = () => {
+      console.log('Datos en vivo conectados: Binance WebSocket');
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+    };
+
+    liveSocket.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        const data = msg.data || msg;
+        const symbol = data.s;
+        const last = parseFloat(data.c);
+        const open = parseFloat(data.o);
+        const change = open ? ((last - open) / open) * 100 : 0;
+
+        liveMarketData[symbol] = {
+          symbol,
+          price: last,
+          change,
+          open,
+          high: parseFloat(data.h),
+          low: parseFloat(data.l),
+          volume: parseFloat(data.v),
+          updatedAt: Date.now()
+        };
+
+        lastLiveUpdate = Date.now();
+        updateLiveHeader(symbol);
+        updateCurrentLivePrice();
+      } catch (err) {
+        console.error('Error procesando datos en vivo:', err);
+      }
+    };
+
+    liveSocket.onerror = (err) => {
+      console.error('Error WebSocket Binance:', err);
+    };
+
+    liveSocket.onclose = () => {
+      console.warn('WebSocket Binance desconectado. Reintentando...');
+      reconnectTimer = setTimeout(startRealtimeData, 3000);
+    };
+  } catch (err) {
+    console.error('No se pudo iniciar WebSocket:', err);
+    reconnectTimer = setTimeout(startRealtimeData, 5000);
+  }
+}
+
+function updateLiveHeader(symbol) {
+  const idMap = {
+    BTCUSDT: 't-btc',
+    ETHUSDT: 't-eth',
+    SOLUSDT: 't-sol',
+    BNBUSDT: 't-bnb'
+  };
+
+  const el = document.getElementById(idMap[symbol]);
+  const d = liveMarketData[symbol];
+  if (!el || !d) return;
+
+  const up = d.change >= 0;
+  el.textContent = `$${formatPrice(d.price)} ${up ? '+' : ''}${d.change.toFixed(2)}%`;
+  el.className = up ? 'up' : 'down';
+}
+
+function updateCurrentLivePrice() {
+  const key = getLiveKeyForSymbol(currentSymbol);
+  if (!key || !liveMarketData[key]) return;
+
+  const d = liveMarketData[key];
+  const priceEl = document.getElementById('currentPrice');
+  const chgEl = document.getElementById('currentChange');
+
+  priceEl.textContent = `$${formatPrice(d.price)}`;
+  priceEl.style.color = d.change >= 0 ? 'var(--green)' : 'var(--red)';
+  chgEl.textContent = `${d.change >= 0 ? '+' : ''}${d.change.toFixed(2)}% · EN VIVO`;
+  chgEl.style.color = d.change >= 0 ? 'var(--green)' : 'var(--red)';
+}
+
+function getCurrentMarketContext() {
+  const key = getLiveKeyForSymbol(currentSymbol);
+  const d = key ? liveMarketData[key] : null;
+
+  if (!d) {
+    return `Activo actual: ${currentSymbol}. No hay precio propio en vivo disponible para este símbolo desde Binance. El gráfico de TradingView puede mostrar datos del mercado, pero la IA no debe inventar precio exacto.`;
+  }
+
+  return `Datos reales en vivo desde Binance para ${key}:
+Precio actual: ${d.price}
+Cambio 24h: ${d.change.toFixed(2)}%
+Máximo 24h: ${d.high}
+Mínimo 24h: ${d.low}
+Volumen 24h: ${d.volume}
+Última actualización: ${new Date(d.updatedAt).toLocaleTimeString('es-AR')}`;
+}
+
+// ============================================================
+// FALLBACK PRICE DATA
 // ============================================================
 const priceData = {
   AAPL: { price: 173.42, chg: +1.24 },
@@ -1260,17 +1424,27 @@ const priceData = {
   GOOGL: { price: 162.87, chg: -0.33 },
   AMZN: { price: 192.54, chg: +1.78 },
   BTCUSD: { price: 68240, chg: +3.45 },
+  ETHUSD: { price: 3200, chg: +1.10 },
+  SOLUSD: { price: 145, chg: +0.85 },
+  BNBUSD: { price: 610, chg: +0.42 },
   META: { price: 548.20, chg: +0.91 },
 };
 
 function simulatePriceUpdate(sym) {
+  const liveKey = getLiveKeyForSymbol(sym);
+
+  if (liveKey && liveMarketData[liveKey]) {
+    updateCurrentLivePrice();
+    return;
+  }
+
   const d = priceData[sym] || { price: (Math.random() * 500 + 50).toFixed(2), chg: (Math.random() * 4 - 2).toFixed(2) };
   const priceEl = document.getElementById('currentPrice');
   const chgEl = document.getElementById('currentChange');
   const chg = parseFloat(d.chg);
   priceEl.textContent = `$${d.price}`;
   priceEl.style.color = chg >= 0 ? 'var(--green)' : 'var(--red)';
-  chgEl.textContent = `${chg >= 0 ? '+' : ''}${d.chg}%`;
+  chgEl.textContent = `${chg >= 0 ? '+' : ''}${d.chg}% · DEMO`;
   chgEl.style.color = chg >= 0 ? 'var(--green)' : 'var(--red)';
 }
 
@@ -1456,11 +1630,16 @@ function sendAIMessage(userText) {
 }
 
 async function callClaudeAPI(userText) {
+  const marketContext = getCurrentMarketContext();
+
   const systemPrompt = `Sos un experto analista de trading y mercados financieros. El usuario está mirando el gráfico de ${currentSymbol} en temporalidad ${currentInterval} con los indicadores: ${activeIndicators.join(', ')}.
+
+Contexto de mercado disponible:
+${marketContext}
 
 Respondé siempre en español, de forma clara, técnica y accionable. Usá formato markdown: **negrita** para niveles de precio importantes, *cursiva* para alertas o puntos de atención, listas para múltiples puntos, y emojis con moderación (📈 📉 ⚡ 🎯 ⚠️).
 
-Sos conciso pero completo. Cuando des niveles de precio, sé específico. Cuando des señales, indicá siempre el contexto de riesgo. No inventes datos exactos en tiempo real, pero usá tu conocimiento técnico para proyectar escenarios plausibles basados en el análisis técnico del activo mencionado.`;
+Sos conciso pero completo. Cuando des niveles de precio, sé específico. Cuando des señales, indicá siempre el contexto de riesgo. Si hay datos reales disponibles en el contexto, usalos. Si no hay datos reales para un símbolo, aclará que no tenés precio exacto en vivo para ese activo y no inventes valores.`;
 
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -1574,17 +1753,8 @@ window.addEventListener('load', () => {
 
   // Init TradingView se llama desde showApp()
 
-  // Simulate ticker updates
-  setInterval(() => {
-    ['spy','qqq','btc','gold'].forEach(id => {
-      const el = document.getElementById(`t-${id}`);
-      if (!el) return;
-      const chg = (Math.random() * 3 - 1).toFixed(2);
-      const up = parseFloat(chg) >= 0;
-      el.textContent = `${up?'+':''}${chg}%`;
-      el.className = up ? 'up' : 'down';
-    });
-  }, 5000);
+  // Iniciar datos reales en vivo para cripto
+  startRealtimeData();
 });
 </script>
 </body>
