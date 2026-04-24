@@ -81,14 +81,35 @@ const marked = { parse: (text) => {
   @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.4;transform:scale(1.5)} }
 
   .ticker-bar {
-    display: flex;
-    gap: 20px;
+    flex: 1;
+    max-width: 560px;
+    overflow: hidden;
     font-size: 0.72rem;
     color: var(--muted);
+    white-space: nowrap;
+    position: relative;
+    mask-image: linear-gradient(to right, transparent, #000 8%, #000 92%, transparent);
+    -webkit-mask-image: linear-gradient(to right, transparent, #000 8%, #000 92%, transparent);
   }
 
-  .ticker-item { display: flex; align-items: center; gap: 6px; }
+  .ticker-track {
+    display: inline-flex;
+    align-items: center;
+    gap: 26px;
+    min-width: max-content;
+    animation: tickerScroll 34s linear infinite;
+  }
+
+  .ticker-bar:hover .ticker-track { animation-play-state: paused; }
+
+  @keyframes tickerScroll {
+    from { transform: translateX(0); }
+    to { transform: translateX(-50%); }
+  }
+
+  .ticker-item { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
   .ticker-item .sym { color: var(--text); font-weight: 700; }
+  .ticker-item .ticker-price { color: var(--muted); }
   .ticker-item .up { color: var(--green); }
   .ticker-item .down { color: var(--red); }
 
@@ -542,10 +563,17 @@ const marked = { parse: (text) => {
     TRADE<span style="color:var(--accent2)">AI</span>
   </div>
   <div class="ticker-bar" id="tickerBar">
-    <div class="ticker-item"><span class="sym">SPY</span><span class="up" id="t-spy">+0.00%</span></div>
-    <div class="ticker-item"><span class="sym">QQQ</span><span class="up" id="t-qqq">+0.00%</span></div>
-    <div class="ticker-item"><span class="sym">BTC</span><span class="up" id="t-btc">+0.00%</span></div>
-    <div class="ticker-item"><span class="sym">GOLD</span><span class="up" id="t-gold">+0.00%</span></div>
+    <div class="ticker-track" id="tickerTrack">
+      <div class="ticker-item" data-ticker-id="spy"><span class="sym">SPY</span><span class="ticker-price">—</span><span class="up ticker-change">—</span></div>
+      <div class="ticker-item" data-ticker-id="qqq"><span class="sym">QQQ</span><span class="ticker-price">—</span><span class="up ticker-change">—</span></div>
+      <div class="ticker-item" data-ticker-id="aapl"><span class="sym">AAPL</span><span class="ticker-price">—</span><span class="up ticker-change">—</span></div>
+      <div class="ticker-item" data-ticker-id="tsla"><span class="sym">TSLA</span><span class="ticker-price">—</span><span class="up ticker-change">—</span></div>
+      <div class="ticker-item" data-ticker-id="nvda"><span class="sym">NVDA</span><span class="ticker-price">—</span><span class="up ticker-change">—</span></div>
+      <div class="ticker-item" data-ticker-id="msft"><span class="sym">MSFT</span><span class="ticker-price">—</span><span class="up ticker-change">—</span></div>
+      <div class="ticker-item" data-ticker-id="btc"><span class="sym">BTC</span><span class="ticker-price">—</span><span class="up ticker-change">—</span></div>
+      <div class="ticker-item" data-ticker-id="eth"><span class="sym">ETH</span><span class="ticker-price">—</span><span class="up ticker-change">—</span></div>
+      <div class="ticker-item" data-ticker-id="gold"><span class="sym">GOLD</span><span class="ticker-price">—</span><span class="up ticker-change">—</span></div>
+    </div>
   </div>
   <div class="header-controls">
     <span id="trialTimer" style="display:none;font-size:.72rem;font-family:var(--font-mono);color:var(--yellow);padding:4px 10px;border:1px solid rgba(255,204,0,.3);background:rgba(255,204,0,.08);"></span>
@@ -1362,20 +1390,6 @@ async function updateRealPrice(sym) {
   updateAnalysisBadges(sym);
 }
 
-// ======================================
-// AUTO REFRESH PRECIOS (TIEMPO REAL)
-// ======================================
-
-let priceInterval = null;
-
-function startPriceUpdates() {
-  if (priceInterval) clearInterval(priceInterval);
-
-  // actualiza cada 5 segundos
-  priceInterval = setInterval(() => {
-    updateRealPrice(currentSymbol);
-  }, 5000);
-}
 function updateAnalysisBadges(sym) {
   const trendEl = document.getElementById('badge-trend');
   const rsiEl = document.getElementById('badge-rsi');
@@ -1699,28 +1713,56 @@ function setLoading(state) {
 }
 
 
+function duplicateTickerForSmoothScroll() {
+  const track = document.getElementById('tickerTrack');
+  if (!track || track.dataset.duplicated === 'yes') return;
+
+  track.innerHTML = track.innerHTML + track.innerHTML;
+  track.dataset.duplicated = 'yes';
+}
+
 async function updateHeaderTickers() {
   const items = [
     { id: 'spy', symbol: 'SPY' },
     { id: 'qqq', symbol: 'QQQ' },
+    { id: 'aapl', symbol: 'AAPL' },
+    { id: 'tsla', symbol: 'TSLA' },
+    { id: 'nvda', symbol: 'NVDA' },
+    { id: 'msft', symbol: 'MSFT' },
     { id: 'btc', symbol: 'BINANCE:BTCUSDT' },
+    { id: 'eth', symbol: 'BINANCE:ETHUSDT' },
     { id: 'gold', symbol: 'OANDA:XAU_USD' }
   ];
 
   for (const item of items) {
-    const el = document.getElementById(`t-${item.id}`);
-    if (!el) continue;
-
     const data = await getRealPrice(item.symbol);
-    if (!data || !Number.isFinite(data.percent)) {
-      el.textContent = '—';
-      el.className = 'down';
-      continue;
-    }
+    const els = document.querySelectorAll(`[data-ticker-id="${item.id}"]`);
 
-    const up = data.percent >= 0;
-    el.textContent = `${up ? '+' : ''}${data.percent.toFixed(2)}%`;
-    el.className = up ? 'up' : 'down';
+    els.forEach(el => {
+      const priceEl = el.querySelector('.ticker-price');
+      const changeEl = el.querySelector('.ticker-change');
+
+      if (!data || !Number.isFinite(data.price) || !Number.isFinite(data.percent)) {
+        if (priceEl) priceEl.textContent = '—';
+        if (changeEl) {
+          changeEl.textContent = 'sin datos';
+          changeEl.className = 'ticker-change down';
+        }
+        return;
+      }
+
+      const up = data.percent >= 0;
+      const price = Number(data.price);
+
+      if (priceEl) {
+        priceEl.textContent = price >= 1000 ? `$${price.toLocaleString('en-US', { maximumFractionDigits: 0 })}` : `$${price.toFixed(2)}`;
+      }
+
+      if (changeEl) {
+        changeEl.textContent = `${up ? '+' : ''}${data.percent.toFixed(2)}%`;
+        changeEl.className = up ? 'ticker-change up' : 'ticker-change down';
+      }
+    });
   }
 }
 
@@ -1728,9 +1770,6 @@ async function updateHeaderTickers() {
 // INIT
 // ============================================================
 window.addEventListener('load', () => {
-
-startPriceUpdates();
-
   // Check session validity
   const session = getSession();
   if (!isSessionValid(session)) {
@@ -1753,7 +1792,8 @@ startPriceUpdates();
 
   // Init TradingView se llama desde showApp()
 
-  // Ticker superior con datos reales de Finnhub, sin simulaciones
+  // Ticker superior en tiempo real con movimiento tipo cinta
+  duplicateTickerForSmoothScroll();
   updateHeaderTickers();
   setInterval(updateHeaderTickers, 30000);
 });
