@@ -1349,6 +1349,10 @@ function adminGenerate(type) {
 // ============================================================
 // TRADINGVIEW WIDGET (versión estable)
 // ============================================================
+// Cache para no consultar Finnhub cada vez que cambiás de símbolo.
+let tradingViewSymbolCache = {};
+let tradingViewRequestId = 0;
+
 function formatTradingViewSymbol(symbol) {
   const s = (symbol || 'AAPL').toUpperCase().trim();
 
@@ -1358,10 +1362,8 @@ function formatTradingViewSymbol(symbol) {
   if (s === 'GOLD' || s === 'XAUUSD') return 'OANDA:XAUUSD';
   if (s.includes(':')) return s;
 
-  // Acciones que cotizan en NYSE.
-  // Esto evita que TradingView busque por error NASDAQ:KO, NASDAQ:DIS, etc.
   const nyseSymbols = [
-    'KO','DIS','BA','NKE','JPM','V','MA','WMT','MCD','IBM',
+    'KO','DIS','BA','NKE','JPM','V','MA','WMT','MCD','IBM','ABT',
     'BAC','C','GS','MS','WFC','AXP','HD','LOW','TGT','COST',
     'PG','JNJ','PFE','MRK','UNH','CVX','XOM','BP','SHEL','GE',
     'F','GM','CAT','DE','MMM','UPS','FDX','T','VZ','ORCL',
@@ -1369,18 +1371,72 @@ function formatTradingViewSymbol(symbol) {
   ];
 
   if (nyseSymbols.includes(s)) return 'NYSE:' + s;
-
-  // Por defecto dejamos NASDAQ para AAPL, TSLA, NVDA, MSFT, GOOGL, AMZN, META, etc.
   return 'NASDAQ:' + s;
 }
 
-function initTradingView(symbol, interval) {
+function normalizeTradingViewExchange(exchangeName) {
+  const ex = (exchangeName || '').toUpperCase();
+
+  if (ex.includes('NASDAQ')) return 'NASDAQ';
+  if (ex.includes('NEW YORK STOCK EXCHANGE') || ex.includes('NYSE')) return 'NYSE';
+  if (ex.includes('AMERICAN STOCK EXCHANGE') || ex.includes('NYSE AMERICAN')) return 'AMEX';
+  if (ex.includes('NYSE ARCA') || ex.includes('ARCA')) return 'AMEX';
+
+  return null;
+}
+
+async function resolveTradingViewSymbol(symbol) {
+  const s = (symbol || 'AAPL').toUpperCase().trim();
+
+  if (s.includes(':')) return s;
+
+  if (s === 'BTCUSD' || s === 'BTC' || s === 'BTCUSDT') return 'BINANCE:BTCUSDT';
+  if (s === 'ETHUSD' || s === 'ETH' || s === 'ETHUSDT') return 'BINANCE:ETHUSDT';
+  if (s === 'GOLD' || s === 'XAUUSD') return 'OANDA:XAUUSD';
+
+  if (tradingViewSymbolCache[s]) return tradingViewSymbolCache[s];
+
+  const fallback = formatTradingViewSymbol(s);
+
+  if (!FINNHUB_API_KEY || FINNHUB_API_KEY.includes('PEGÁ_TU_API_KEY')) {
+    tradingViewSymbolCache[s] = fallback;
+    return fallback;
+  }
+
+  try {
+    const url = `https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(s)}&token=${FINNHUB_API_KEY}`;
+    const res = await fetch(url);
+    const profile = await res.json();
+    const tvExchange = normalizeTradingViewExchange(profile.exchange || '');
+
+    if (tvExchange) {
+      tradingViewSymbolCache[s] = `${tvExchange}:${s}`;
+      console.log('Exchange detectado:', s, '→', tradingViewSymbolCache[s], profile.exchange);
+      return tradingViewSymbolCache[s];
+    }
+  } catch (err) {
+    console.warn('No se pudo detectar exchange con Finnhub:', s, err);
+  }
+
+  tradingViewSymbolCache[s] = fallback;
+  return fallback;
+}
+
+async function initTradingView(symbol, interval) {
   const container = document.getElementById('tradingview-widget');
 
   if (!container) {
     console.error('Contenedor tradingview-widget no encontrado');
     return;
   }
+
+  const requestId = ++tradingViewRequestId;
+  container.innerHTML = '<div style="height:100%;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:.75rem;">Detectando mercado...</div>';
+
+  const tvSymbol = await resolveTradingViewSymbol(symbol);
+  const tvInterval = interval || 'D';
+
+  if (requestId !== tradingViewRequestId) return;
 
   container.innerHTML = '';
 
@@ -1390,10 +1446,9 @@ function initTradingView(symbol, interval) {
   chartDiv.style.height = '100%';
   container.appendChild(chartDiv);
 
-  const tvSymbol = formatTradingViewSymbol(symbol);
-  const tvInterval = interval || 'D';
-
   function buildWidget() {
+    if (requestId !== tradingViewRequestId) return;
+
     if (typeof TradingView === 'undefined' || !TradingView.widget) {
       console.error('TradingView todavía no cargó. Reintentando...');
       setTimeout(buildWidget, 300);
