@@ -1784,7 +1784,8 @@ function checkPriceAlerts() {
 }
 
 // ============================================================
-// MOTOR DE SEÑALES PRO (RSI + TENDENCIA + VOLATILIDAD)
+// MOTOR DE SEÑALES PRO MEJORADO
+// RSI + tendencia + volatilidad + confirmaciones + filtros de riesgo
 // ============================================================
 let priceHistoryBySymbol = {};
 let latestSignalEngine = {
@@ -1793,6 +1794,7 @@ let latestSignalEngine = {
   volatility: 'sin dato',
   signal: 'ESPERAR',
   risk: 'MEDIO',
+  confidence: 'BAJA',
   score: 0,
   reason: 'Esperando datos suficientes.'
 };
@@ -1806,25 +1808,41 @@ function recordPriceHistory(symbol, price) {
   const history = priceHistoryBySymbol[sym];
 
   const last = history[history.length - 1];
-  if (!last || Math.abs(last.price - p) > 0.00001) {
+  if (!last || Math.abs(last.price - p) > Math.max(0.00001, p * 0.000001)) {
     history.push({ price: p, time: Date.now() });
   }
 
-  if (history.length > 80) history.splice(0, history.length - 80);
+  // Guardamos más datos para que RSI/tendencia sean menos nerviosos.
+  if (history.length > 250) history.splice(0, history.length - 250);
+}
+
+function getPriceHistory(symbol) {
+  const sym = (symbol || currentSymbol || 'AAPL').toUpperCase();
+  return priceHistoryBySymbol[sym] || [];
+}
+
+function calculateEMA(values, period) {
+  if (!Array.isArray(values) || values.length < period) return null;
+  const k = 2 / (period + 1);
+  let ema = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < values.length; i++) {
+    ema = values[i] * k + ema * (1 - k);
+  }
+  return ema;
 }
 
 function calculateRSIFromHistory(symbol, period = 14) {
-  const sym = (symbol || currentSymbol || 'AAPL').toUpperCase();
-  const history = priceHistoryBySymbol[sym] || [];
+  const history = getPriceHistory(symbol);
   if (history.length < period + 1) return null;
 
-  const slice = history.slice(-(period + 1));
+  const prices = history.map(x => x.price);
+  const slice = prices.slice(-(period + 1));
   let gains = 0;
   let losses = 0;
 
   for (let i = 1; i < slice.length; i++) {
-    const diff = slice[i].price - slice[i - 1].price;
-    if (diff >= 0) gains += diff;
+    const diff = slice[i] - slice[i - 1];
+    if (diff > 0) gains += diff;
     else losses += Math.abs(diff);
   }
 
@@ -1838,7 +1856,31 @@ function calculateRSIFromHistory(symbol, period = 14) {
   return 100 - (100 / (1 + rs));
 }
 
-function calculateTrendFromData(data) {
+function calculateTrendFromHistory(symbol) {
+  const history = getPriceHistory(symbol);
+  const prices = history.map(x => x.price);
+
+  if (prices.length < 25) {
+    return { label: 'CALCULANDO', className: 'neutral', score: 0, detail: 'faltan ticks para tendencia' };
+  }
+
+  const shortEma = calculateEMA(prices.slice(-40), 8);
+  const longEma = calculateEMA(prices.slice(-80), 21);
+  const first = prices[Math.max(0, prices.length - 25)];
+  const last = prices[prices.length - 1];
+  const slopePct = first ? ((last - first) / first) * 100 : 0;
+
+  let score = 0;
+  if (shortEma && longEma) score += shortEma > longEma ? 1 : shortEma < longEma ? -1 : 0;
+  if (slopePct > 0.08) score += 1;
+  if (slopePct < -0.08) score -= 1;
+
+  if (score >= 2) return { label: 'ALCISTA', className: 'bullish', score, detail: `EMA corta sobre larga · pendiente ${slopePct.toFixed(2)}%` };
+  if (score <= -2) return { label: 'BAJISTA', className: 'bearish', score, detail: `EMA corta bajo larga · pendiente ${slopePct.toFixed(2)}%` };
+  return { label: 'LATERAL', className: 'neutral', score, detail: `sin dirección clara · pendiente ${slopePct.toFixed(2)}%` };
+}
+
+function calculateSessionTrendFromData(data) {
   const price = Number(data?.price);
   const open = Number(data?.open);
   const previousClose = Number(data?.previousClose);
@@ -1847,7 +1889,7 @@ function calculateTrendFromData(data) {
   let score = 0;
   if (Number.isFinite(price) && Number.isFinite(open)) score += price > open ? 1 : price < open ? -1 : 0;
   if (Number.isFinite(price) && Number.isFinite(previousClose)) score += price > previousClose ? 1 : price < previousClose ? -1 : 0;
-  if (Number.isFinite(percent)) score += percent > 0.20 ? 1 : percent < -0.20 ? -1 : 0;
+  if (Number.isFinite(percent)) score += percent > 0.25 ? 1 : percent < -0.25 ? -1 : 0;
 
   if (score >= 2) return { label: 'ALCISTA', className: 'bullish', score };
   if (score <= -2) return { label: 'BAJISTA', className: 'bearish', score };
@@ -1865,114 +1907,27 @@ function calculateVolatilityFromData(data) {
 
   const value = ((high - low) / price) * 100;
   let risk = 'BAJO';
-  if (value >= 3) risk = 'ALTO';
-  else if (value >= 1.3) risk = 'MEDIO';
+  if (value >= 3.2) risk = 'ALTO';
+  else if (value >= 1.4) risk = 'MEDIO';
 
   return { value, label: value.toFixed(2) + '%', risk };
 }
 
-function generateProSignal(symbol = currentSymbol) {
-  const data = latestMarketData || {};
-  const price = Number(data.price);
-  const percent = Number(data.percent);
-  const trend = calculateTrendFromData(data);
-  const volatility = calculateVolatilityFromData(data);
-  const rsi = calculateRSIFromHistory(symbol, 14);
+function calculatePricePosition(data) {
+  const price = Number(data?.price);
+  const high = Number(data?.high);
+  const low = Number(data?.low);
 
-  let score = trend.score || 0;
-  const reasons = [];
-
-  if (trend.label === 'ALCISTA') reasons.push('tendencia intradía positiva');
-  if (trend.label === 'BAJISTA') reasons.push('tendencia intradía negativa');
-  if (trend.label === 'LATERAL') reasons.push('mercado lateral o sin confirmación fuerte');
-
-  if (Number.isFinite(rsi)) {
-    if (rsi < 30) { score += 1; reasons.push('RSI bajo: posible rebote, requiere confirmación'); }
-    else if (rsi > 70) { score -= 1; reasons.push('RSI alto: posible sobrecompra'); }
-    else if (rsi >= 45 && rsi <= 60) { reasons.push('RSI en zona neutral saludable'); }
-    else reasons.push('RSI sin extremo relevante');
-  } else {
-    reasons.push('RSI calculándose: hacen falta más ticks/precios');
+  if (!Number.isFinite(price) || !Number.isFinite(high) || !Number.isFinite(low) || high <= low) {
+    return { value: null, label: 'sin dato' };
   }
 
-  if (volatility.risk === 'ALTO') {
-    score -= 1;
-    reasons.push('volatilidad alta: mayor riesgo operativo');
-  } else if (volatility.risk === 'BAJO') {
-    reasons.push('volatilidad controlada');
-  }
+  const pos = (price - low) / (high - low);
+  let label = 'zona media';
+  if (pos >= 0.82) label = 'cerca de máximos';
+  else if (pos <= 0.18) label = 'cerca de mínimos';
 
-  if (Number.isFinite(percent) && Math.abs(percent) >= 3) {
-    score -= 1;
-    reasons.push('movimiento diario extendido');
-  }
-
-  let signal = 'ESPERAR';
-  let className = 'neutral';
-  let risk = volatility.risk;
-
-  if (!Number.isFinite(price)) {
-    signal = 'SIN DATOS';
-    risk = 'ALTO';
-    className = 'neutral';
-  } else if (volatility.risk === 'ALTO' || (Number.isFinite(rsi) && rsi > 75) || score <= -2) {
-    signal = 'RIESGO ALTO';
-    className = 'bearish';
-    risk = 'ALTO';
-  } else if (score >= 2 && (!Number.isFinite(rsi) || rsi < 70)) {
-    signal = 'POSIBLE COMPRA';
-    className = 'bullish';
-    risk = risk === 'ALTO' ? 'ALTO' : 'MEDIO';
-  } else {
-    signal = 'ESPERAR';
-    className = 'neutral';
-    if (risk === 'BAJO') risk = 'MEDIO';
-  }
-
-  latestSignalEngine = {
-    rsi: Number.isFinite(rsi) ? Number(rsi.toFixed(1)) : null,
-    trend: trend.label,
-    trendClass: trend.className,
-    volatility: volatility.label,
-    volatilityValue: volatility.value,
-    signal,
-    signalClass: className,
-    risk,
-    score,
-    reason: reasons.join(' · ')
-  };
-
-  return latestSignalEngine;
-}
-
-function updateAnalysisBadges(sym) {
-  const trendEl = document.getElementById('badge-trend');
-  const rsiEl = document.getElementById('badge-rsi');
-  const sigEl = document.getElementById('badge-signal');
-  const supEl = document.getElementById('badge-support');
-  const resEl = document.getElementById('badge-resistance');
-
-  const price = Number(latestMarketData.price);
-  const signal = generateProSignal(sym);
-
-  if (trendEl) {
-    trendEl.textContent = signal.trend || '—';
-    trendEl.className = 'a-card-val ' + (signal.trendClass || 'neutral');
-  }
-
-  if (rsiEl) {
-    rsiEl.textContent = signal.rsi !== null ? signal.rsi : 'calc.';
-    rsiEl.className = 'a-card-val ' + (signal.rsi !== null && signal.rsi > 70 ? 'bearish' : signal.rsi !== null && signal.rsi < 30 ? 'bullish' : 'neutral');
-  }
-
-  if (sigEl) {
-    sigEl.textContent = signal.signal || 'ESPERAR';
-    sigEl.className = 'a-card-val ' + (signal.signalClass || 'neutral');
-    sigEl.title = `Riesgo: ${signal.risk}. ${signal.reason}`;
-  }
-
-  if (supEl) supEl.textContent = Number.isFinite(price) ? '$' + (price * 0.97).toFixed(2) : '—';
-  if (resEl) resEl.textContent = Number.isFinite(price) ? '$' + (price * 1.03).toFixed(2) : '—';
+  return { value: pos, label };
 }
 
 function calculateMarketLevels(data) {
@@ -1986,14 +1941,25 @@ function calculateMarketLevels(data) {
     return {
       support1: 'sin dato', support2: 'sin dato',
       resistance1: 'sin dato', resistance2: 'sin dato',
-      riskRange: 'sin dato'
+      pivot: 'sin dato', riskRange: 'sin dato'
     };
   }
 
-  const support1 = Number.isFinite(low) ? low : price * 0.97;
-  const support2 = Number.isFinite(previousClose) ? previousClose : price * 0.94;
-  const resistance1 = Number.isFinite(high) ? high : price * 1.03;
-  const resistance2 = Number.isFinite(open) && open > price ? open : price * 1.06;
+  // Niveles por pivote clásico cuando hay high/low/close previo.
+  const pivot = Number.isFinite(high) && Number.isFinite(low) && Number.isFinite(previousClose)
+    ? (high + low + previousClose) / 3
+    : price;
+
+  const r1 = Number.isFinite(high) && Number.isFinite(low) ? (2 * pivot) - low : price * 1.02;
+  const s1 = Number.isFinite(high) && Number.isFinite(low) ? (2 * pivot) - high : price * 0.98;
+  const r2 = Number.isFinite(high) && Number.isFinite(low) ? pivot + (high - low) : price * 1.04;
+  const s2 = Number.isFinite(high) && Number.isFinite(low) ? pivot - (high - low) : price * 0.96;
+
+  const support1 = Math.min(price * 0.995, Math.max(s1, low || s1));
+  const support2 = Math.min(s2, support1);
+  const resistance1 = Math.max(price * 1.005, Math.min(r1, high || r1));
+  const resistance2 = Math.max(r2, resistance1);
+
   const riskRange = Number.isFinite(high) && Number.isFinite(low) && price > 0
     ? (((high - low) / price) * 100).toFixed(2) + '%'
     : 'sin dato';
@@ -2003,8 +1969,169 @@ function calculateMarketLevels(data) {
     support2: Number(support2).toFixed(2),
     resistance1: Number(resistance1).toFixed(2),
     resistance2: Number(resistance2).toFixed(2),
+    pivot: Number(pivot).toFixed(2),
     riskRange
   };
+}
+
+function generateProSignal(symbol = currentSymbol) {
+  const data = latestMarketData || {};
+  const price = Number(data.price);
+  const percent = Number(data.percent);
+  const change = Number(data.change);
+  const rsi = calculateRSIFromHistory(symbol, 14);
+  const tickTrend = calculateTrendFromHistory(symbol);
+  const sessionTrend = calculateSessionTrendFromData(data);
+  const volatility = calculateVolatilityFromData(data);
+  const position = calculatePricePosition(data);
+
+  let score = 0;
+  const reasons = [];
+  const warnings = [];
+
+  if (!Number.isFinite(price)) {
+    latestSignalEngine = {
+      rsi: null,
+      trend: 'SIN DATOS',
+      trendClass: 'neutral',
+      volatility: volatility.label,
+      signal: 'SIN DATOS',
+      signalClass: 'neutral',
+      risk: 'ALTO',
+      confidence: 'BAJA',
+      score: 0,
+      reason: 'No hay precio válido para evaluar.'
+    };
+    return latestSignalEngine;
+  }
+
+  // Tendencia: se requiere coincidencia entre datos de sesión y ticks recientes.
+  score += sessionTrend.score;
+  score += tickTrend.score;
+
+  if (sessionTrend.label === tickTrend.label && sessionTrend.label !== 'LATERAL' && tickTrend.label !== 'CALCULANDO') {
+    score += sessionTrend.label === 'ALCISTA' ? 1 : -1;
+    reasons.push(`confirmación doble de tendencia ${sessionTrend.label.toLowerCase()}`);
+  } else {
+    reasons.push(`sesión ${sessionTrend.label.toLowerCase()} / ticks ${tickTrend.label.toLowerCase()}`);
+  }
+
+  // RSI con zonas más prudentes.
+  if (Number.isFinite(rsi)) {
+    if (rsi >= 45 && rsi <= 62) { score += 1; reasons.push('RSI sano para continuación'); }
+    else if (rsi > 62 && rsi <= 70) { reasons.push('RSI positivo pero algo avanzado'); }
+    else if (rsi > 70 && rsi <= 78) { score -= 1; warnings.push('RSI alto: evitar perseguir precio'); }
+    else if (rsi > 78) { score -= 2; warnings.push('RSI extremo: riesgo de retroceso'); }
+    else if (rsi >= 32 && rsi < 45) { reasons.push('RSI débil pero no extremo'); }
+    else if (rsi < 32) { score -= 1; warnings.push('RSI muy bajo: posible rebote, pero tendencia débil'); }
+  } else {
+    warnings.push('RSI calculándose: hacen falta más ticks reales');
+  }
+
+  // Volatilidad y extensión diaria.
+  if (volatility.risk === 'ALTO') { score -= 2; warnings.push('volatilidad alta'); }
+  else if (volatility.risk === 'MEDIO') { score -= 0.5; reasons.push('volatilidad media'); }
+  else { score += 0.5; reasons.push('volatilidad controlada'); }
+
+  if (Number.isFinite(percent)) {
+    if (Math.abs(percent) >= 4) { score -= 2; warnings.push('movimiento diario muy extendido'); }
+    else if (Math.abs(percent) >= 2.2) { score -= 1; warnings.push('movimiento diario extendido'); }
+  }
+
+  if (position.value !== null) {
+    if (position.value >= 0.88 && Number.isFinite(rsi) && rsi > 65) {
+      score -= 1.5;
+      warnings.push('precio cerca de máximos con RSI elevado');
+    } else if (position.value <= 0.15 && sessionTrend.label === 'BAJISTA') {
+      score -= 1;
+      warnings.push('precio cerca de mínimos con presión bajista');
+    } else {
+      reasons.push(`precio en ${position.label}`);
+    }
+  }
+
+  // Reglas de decisión prudentes.
+  let signal = 'ESPERAR';
+  let className = 'neutral';
+  let risk = volatility.risk;
+  let confidence = 'MEDIA';
+
+  const enoughTicks = getPriceHistory(symbol).length >= 25;
+  const bullishConfirmed = sessionTrend.label === 'ALCISTA' && (tickTrend.label === 'ALCISTA' || tickTrend.label === 'CALCULANDO');
+  const dangerous = volatility.risk === 'ALTO' || (Number.isFinite(rsi) && rsi > 75) || (Number.isFinite(percent) && Math.abs(percent) >= 4) || score <= -2;
+
+  if (!enoughTicks) {
+    signal = 'ESPERAR';
+    className = 'neutral';
+    risk = 'MEDIO';
+    confidence = 'BAJA';
+    warnings.push('pocos ticks acumulados: esperar más confirmación');
+  } else if (dangerous) {
+    signal = 'RIESGO ALTO';
+    className = 'bearish';
+    risk = 'ALTO';
+    confidence = 'ALTA';
+  } else if (bullishConfirmed && score >= 3 && (!Number.isFinite(rsi) || (rsi >= 42 && rsi <= 70))) {
+    signal = 'POSIBLE COMPRA';
+    className = 'bullish';
+    risk = volatility.risk === 'BAJO' ? 'MEDIO' : volatility.risk;
+    confidence = score >= 4 ? 'ALTA' : 'MEDIA';
+  } else {
+    signal = 'ESPERAR';
+    className = 'neutral';
+    risk = volatility.risk === 'BAJO' ? 'MEDIO' : volatility.risk;
+    confidence = score <= 0 ? 'BAJA' : 'MEDIA';
+  }
+
+  latestSignalEngine = {
+    rsi: Number.isFinite(rsi) ? Number(rsi.toFixed(1)) : null,
+    trend: tickTrend.label === 'CALCULANDO' ? sessionTrend.label : tickTrend.label,
+    trendClass: tickTrend.label === 'CALCULANDO' ? sessionTrend.className : tickTrend.className,
+    sessionTrend: sessionTrend.label,
+    tickTrend: tickTrend.label,
+    volatility: volatility.label,
+    volatilityValue: volatility.value,
+    pricePosition: position.label,
+    signal,
+    signalClass: className,
+    risk,
+    confidence,
+    score: Number(score.toFixed(1)),
+    reason: [...reasons, ...warnings].join(' · ')
+  };
+
+  return latestSignalEngine;
+}
+
+function updateAnalysisBadges(sym) {
+  const trendEl = document.getElementById('badge-trend');
+  const rsiEl = document.getElementById('badge-rsi');
+  const sigEl = document.getElementById('badge-signal');
+  const supEl = document.getElementById('badge-support');
+  const resEl = document.getElementById('badge-resistance');
+
+  const price = Number(latestMarketData.price);
+  const levels = calculateMarketLevels(latestMarketData);
+  const signal = generateProSignal(sym);
+
+  if (trendEl) {
+    trendEl.textContent = signal.trend || '—';
+    trendEl.className = 'a-card-val ' + (signal.trendClass || 'neutral');
+  }
+
+  if (rsiEl) {
+    rsiEl.textContent = signal.rsi !== null ? signal.rsi : 'calc.';
+    rsiEl.className = 'a-card-val ' + (signal.rsi !== null && signal.rsi > 70 ? 'bearish' : signal.rsi !== null && signal.rsi < 35 ? 'bearish' : 'neutral');
+  }
+
+  if (sigEl) {
+    sigEl.textContent = signal.signal || 'ESPERAR';
+    sigEl.className = 'a-card-val ' + (signal.signalClass || 'neutral');
+    sigEl.title = `Riesgo: ${signal.risk}. Confianza: ${signal.confidence}. ${signal.reason}`;
+  }
+
+  if (supEl) supEl.textContent = Number.isFinite(price) ? '$' + levels.support1 : '—';
+  if (resEl) resEl.textContent = Number.isFinite(price) ? '$' + levels.resistance1 : '—';
 }
 
 function buildMarketContextForAI() {
@@ -2053,17 +2180,21 @@ LECTURA AUTOMÁTICA:
 Tendencia intradía aproximada: ${trend}
 Momentum por variación porcentual: ${momentum}
 Rango intradía / volatilidad simple: ${levels.riskRange}
+Posición dentro del rango diario: ${signal.pricePosition || 'sin dato'}
 
-MOTOR DE SEÑALES PRO:
+MOTOR DE SEÑALES PRO MEJORADO:
 Señal prudente: ${signal.signal}
 Riesgo estimado: ${signal.risk}
+Confianza del motor: ${signal.confidence}
 RSI calculado por ticks recientes: ${signal.rsi ?? 'calculándose'}
-Tendencia del motor: ${signal.trend}
+Tendencia por ticks: ${signal.tickTrend || 'sin dato'}
+Tendencia de sesión: ${signal.sessionTrend || 'sin dato'}
 Volatilidad del motor: ${signal.volatility}
 Score técnico interno: ${signal.score}
 Motivo técnico: ${signal.reason}
 
 NIVELES CALCULADOS AUTOMÁTICAMENTE:
+Pivot aproximado: ${levels.pivot}
 Soporte 1 aproximado: ${levels.support1}
 Soporte 2 aproximado: ${levels.support2}
 Resistencia 1 aproximada: ${levels.resistance1}
@@ -2075,6 +2206,7 @@ INSTRUCCIONES PARA RESPONDER:
 - Diferenciar dato real, lectura técnica e hipótesis.
 - No usar frases imperativas como "comprá ahora", "vendé ahora" o "entrar ya".
 - Usar lenguaje prudente: "posibilidad de compra", "posibilidad de venta", "esperar confirmación" o "riesgo alto".
+- Si el motor dice ESPERAR o RIESGO ALTO, no transformar eso en recomendación positiva.
 - Incluir entrada hipotética, stop loss, take profit y riesgo/recompensa solo como escenario educativo si el usuario pide señal operativa.
 - Para sugerir "posibilidad de compra" con más fundamento, considerar si el usuario cargó cartera/historial de compras; si no hay cartera cargada, aclarar que es solo una hipótesis técnica.
 - Advertir si el mercado está cerrado, si el dato puede venir demorado o si falta confirmación del gráfico.
