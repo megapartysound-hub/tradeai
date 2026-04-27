@@ -1439,6 +1439,8 @@ function switchSymbol(sym) {
   });
 
   // Actualizar datos reales sin tocar TradingView
+  // Primero cargamos historial real para que RSI no quede calculando.
+  loadInitialHistoryPro(sym).then(() => updateAnalysisBadges(sym));
   updateRealPrice(sym);
   startRealtimeFinnhub(sym);
   updateAnalysisBadges(sym);
@@ -1503,6 +1505,86 @@ function formatFinnhubSymbol(symbol) {
   if (s.includes(':')) return s;
 
   return s;
+}
+
+
+// ============================================================
+// RSI INSTANTÁNEO PRO
+// Carga historial real desde Finnhub Candle antes de esperar ticks.
+// Así el RSI aparece rápido y no queda dependiendo del WebSocket.
+// ============================================================
+let historyLoadingBySymbol = {};
+let historyLoadedAtBySymbol = {};
+
+function getFinnhubCandleEndpoint(finnhubSymbol) {
+  const s = String(finnhubSymbol || '').toUpperCase();
+  if (s.startsWith('BINANCE:') || s.startsWith('COINBASE:') || s.startsWith('KRAKEN:')) return 'crypto/candle';
+  if (s.startsWith('OANDA:') || s.startsWith('FX:') || s.includes('XAU_') || s.includes('XAG_')) return 'forex/candle';
+  return 'stock/candle';
+}
+
+async function loadInitialHistoryPro(symbol, force = false) {
+  if (!FINNHUB_API_KEY || FINNHUB_API_KEY.includes('PEGÁ_TU_API_KEY')) return false;
+
+  const appSymbol = (symbol || currentSymbol || 'AAPL').toUpperCase().trim();
+  const existing = getPriceHistory(appSymbol);
+
+  // Si ya hay suficiente historial reciente, no gastamos llamadas de API.
+  const loadedAt = historyLoadedAtBySymbol[appSymbol] || 0;
+  if (!force && existing.length >= 25 && (Date.now() - loadedAt) < 5 * 60 * 1000) {
+    return true;
+  }
+
+  if (historyLoadingBySymbol[appSymbol]) return historyLoadingBySymbol[appSymbol];
+
+  historyLoadingBySymbol[appSymbol] = (async () => {
+    const finnhubSymbol = formatFinnhubSymbol(appSymbol);
+    const endpoint = getFinnhubCandleEndpoint(finnhubSymbol);
+    const now = Math.floor(Date.now() / 1000);
+
+    // Intentos de menor a mayor rango. Si mercado cerrado o no hay 1m, cae a 5m/15m/60m/D.
+    const attempts = [
+      { resolution: '1',  days: 3 },
+      { resolution: '5',  days: 7 },
+      { resolution: '15', days: 14 },
+      { resolution: '60', days: 60 },
+      { resolution: 'D',  days: 220 }
+    ];
+
+    for (const a of attempts) {
+      try {
+        const from = now - (a.days * 24 * 60 * 60);
+        const url = `https://finnhub.io/api/v1/${endpoint}?symbol=${encodeURIComponent(finnhubSymbol)}&resolution=${a.resolution}&from=${from}&to=${now}&token=${FINNHUB_API_KEY}`;
+        const res = await fetch(url);
+        const data = await res.json();
+
+        if (!res.ok || !data || data.s !== 'ok' || !Array.isArray(data.c) || data.c.length < 16) {
+          continue;
+        }
+
+        const closes = data.c
+          .map((v, i) => ({ price: Number(v), time: (Array.isArray(data.t) && data.t[i] ? data.t[i] * 1000 : Date.now()) }))
+          .filter(x => Number.isFinite(x.price) && x.price > 0)
+          .slice(-160);
+
+        if (closes.length >= 16) {
+          priceHistoryBySymbol[appSymbol] = closes;
+          historyLoadedAtBySymbol[appSymbol] = Date.now();
+          console.log(`✅ Historial inicial cargado para ${appSymbol}: ${closes.length} velas (${a.resolution})`);
+          return true;
+        }
+      } catch (e) {
+        console.warn('No se pudo cargar historial RSI:', appSymbol, a.resolution, e);
+      }
+    }
+
+    console.warn('Finnhub no devolvió historial suficiente para RSI instantáneo:', appSymbol);
+    return false;
+  })();
+
+  const ok = await historyLoadingBySymbol[appSymbol];
+  delete historyLoadingBySymbol[appSymbol];
+  return ok;
 }
 
 async function getRealPrice(symbol) {
@@ -1571,6 +1653,10 @@ async function updateRealPrice(sym) {
 
   if (priceEl) priceEl.textContent = 'cargando...';
   if (chgEl) chgEl.textContent = 'Finnhub';
+
+  if (getPriceHistory(sym).length < 16) {
+    loadInitialHistoryPro(sym).then(() => updateAnalysisBadges(sym));
+  }
 
   const data = await getRealPrice(sym);
 
@@ -2460,7 +2546,8 @@ function updateAnalysisBadges(sym) {
   }
 
   if (rsiEl) {
-    rsiEl.textContent = signal.rsi !== null ? signal.rsi : 'calc.';
+    const isLoadingHistory = !!historyLoadingBySymbol[(sym || currentSymbol || 'AAPL').toUpperCase()];
+    rsiEl.textContent = signal.rsi !== null ? signal.rsi : (isLoadingHistory ? 'hist...' : 'calc.');
     rsiEl.className = 'a-card-val ' + (signal.rsi !== null && signal.rsi > 70 ? 'bearish' : signal.rsi !== null && signal.rsi < 35 ? 'bearish' : 'neutral');
   }
 
@@ -2526,7 +2613,7 @@ MOTOR DE SEÑALES PRO MEJORADO:
 Señal prudente: ${signal.signal}
 Riesgo estimado: ${signal.risk}
 Confianza del motor: ${signal.confidence}
-RSI calculado por ticks recientes: ${signal.rsi ?? 'calculándose'}
+RSI calculado con historial real + ticks recientes: ${signal.rsi ?? 'calculándose'}
 Tendencia por ticks: ${signal.tickTrend || 'sin dato'}
 Tendencia de sesión: ${signal.sessionTrend || 'sin dato'}
 Breakout detectado: ${signal.breakout || 'sin dato'}
@@ -2904,6 +2991,7 @@ window.addEventListener('load', () => {
     if (session.type === 'trial') startTrialTimer(session.expiresAt);
   }
 
+  loadInitialHistoryPro('AAPL').then(() => updateAnalysisBadges('AAPL'));
   updateRealPrice('AAPL');
   startRealtimeFinnhub('AAPL');
   updateAnalysisBadges('AAPL');
