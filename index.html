@@ -1988,18 +1988,93 @@ function calculateBreakoutSignal(data, symbol = currentSymbol) {
   const history = getPriceHistory(symbol).map(x => x.price);
   const rsi = calculateRSIFromHistory(symbol, 14);
   const tickTrend = calculateTrendFromHistory(symbol);
+  const sessionTrend = calculateSessionTrendFromData(data);
   const volatility = calculateVolatilityFromData(data);
 
-  if (!Number.isFinite(price) || history.length < 20 || !Number.isFinite(resistance1) || !Number.isFinite(support1)) {
+  if (!Number.isFinite(price) || !Number.isFinite(resistance1) || !Number.isFinite(support1)) {
     return {
-      label: 'CALCULANDO',
+      label: 'SIN DATOS',
       className: 'neutral',
       direction: 'none',
       confirmed: false,
       falseBreakoutRisk: false,
       score: 0,
       level: null,
-      reason: 'faltan ticks/niveles para validar ruptura'
+      reason: 'faltan datos válidos para evaluar ruptura'
+    };
+  }
+
+  const breakoutMarginUp = ((price - resistance1) / resistance1) * 100;
+  const breakoutMarginDown = ((support1 - price) / support1) * 100;
+  const nearResistance = price > resistance1 * 0.997 && price <= resistance1 * 1.001;
+  const nearSupport = price < support1 * 1.003 && price >= support1 * 0.999;
+  const aboveResistance = price > resistance1 * 1.001;
+  const belowSupport = price < support1 * 0.999;
+
+  // Fallback inmediato: esto evita que la card quede clavada en CALCULANDO.
+  // Usa high/low/open/cierre previo de Finnhub hasta que haya suficientes ticks WebSocket.
+  if (history.length < 8) {
+    if (aboveResistance && sessionTrend.label === 'ALCISTA') {
+      return {
+        label: 'RUPTURA INICIAL ↑',
+        className: 'bullish',
+        direction: 'up-watch',
+        confirmed: false,
+        falseBreakoutRisk: false,
+        score: 0.75,
+        level: resistance1,
+        reason: `precio sobre resistencia ${resistance1.toFixed(2)}, esperando más ticks para confirmar breakout real`
+      };
+    }
+
+    if (belowSupport && sessionTrend.label === 'BAJISTA') {
+      return {
+        label: 'RUPTURA INICIAL ↓',
+        className: 'bearish',
+        direction: 'down-watch',
+        confirmed: false,
+        falseBreakoutRisk: false,
+        score: -0.75,
+        level: support1,
+        reason: `precio bajo soporte ${support1.toFixed(2)}, esperando más ticks para confirmar pérdida real`
+      };
+    }
+
+    if (nearResistance) {
+      return {
+        label: 'TEST RES.',
+        className: 'neutral',
+        direction: 'up-watch',
+        confirmed: false,
+        falseBreakoutRisk: false,
+        score: 0.25,
+        level: resistance1,
+        reason: `precio testeando resistencia ${resistance1.toFixed(2)} con pocos ticks acumulados`
+      };
+    }
+
+    if (nearSupport) {
+      return {
+        label: 'TEST SOP.',
+        className: 'neutral',
+        direction: 'down-watch',
+        confirmed: false,
+        falseBreakoutRisk: false,
+        score: -0.25,
+        level: support1,
+        reason: `precio testeando soporte ${support1.toFixed(2)} con pocos ticks acumulados`
+      };
+    }
+
+    return {
+      label: 'SIN RUPTURA',
+      className: 'neutral',
+      direction: 'none',
+      confirmed: false,
+      falseBreakoutRisk: false,
+      score: 0,
+      level: null,
+      reason: `sin ruptura por ahora; ticks acumulados: ${history.length}`
     };
   }
 
@@ -2010,19 +2085,17 @@ function calculateBreakoutSignal(data, symbol = currentSymbol) {
   const last5 = history.slice(-5);
   const aboveResistanceTicks = last5.filter(p => p > resistance1).length;
   const belowSupportTicks = last5.filter(p => p < support1).length;
-  const breakoutMarginUp = ((price - resistance1) / resistance1) * 100;
-  const breakoutMarginDown = ((support1 - price) / support1) * 100;
 
   const brokeUpNow = previousMax <= resistance1 && price > resistance1 * 1.001;
   const heldAbove = price > resistance1 && aboveResistanceTicks >= 3;
-  const bullishMomentum = tickTrend.label === 'ALCISTA' || (Number.isFinite(percent) && percent > 0.35);
+  const bullishMomentum = tickTrend.label === 'ALCISTA' || sessionTrend.label === 'ALCISTA' || (Number.isFinite(percent) && percent > 0.35);
   const rsiOkForBreakout = !Number.isFinite(rsi) || (rsi >= 48 && rsi <= 74);
   const notTooExtended = !Number.isFinite(percent) || Math.abs(percent) < 4;
   const volatilityOk = volatility.risk !== 'ALTO';
 
   const brokeDownNow = previousMin >= support1 && price < support1 * 0.999;
   const heldBelow = price < support1 && belowSupportTicks >= 3;
-  const bearishMomentum = tickTrend.label === 'BAJISTA' || (Number.isFinite(percent) && percent < -0.35);
+  const bearishMomentum = tickTrend.label === 'BAJISTA' || sessionTrend.label === 'BAJISTA' || (Number.isFinite(percent) && percent < -0.35);
 
   if ((brokeUpNow || heldAbove) && bullishMomentum) {
     if (!rsiOkForBreakout || !notTooExtended || !volatilityOk) {
@@ -2063,7 +2136,7 @@ function calculateBreakoutSignal(data, symbol = currentSymbol) {
     };
   }
 
-  if (price > resistance1 * 0.997 && price <= resistance1 * 1.001) {
+  if (nearResistance) {
     return {
       label: 'TEST RES.',
       className: 'neutral',
@@ -2076,7 +2149,7 @@ function calculateBreakoutSignal(data, symbol = currentSymbol) {
     };
   }
 
-  if (price < support1 * 1.003 && price >= support1 * 0.999) {
+  if (nearSupport) {
     return {
       label: 'TEST SOP.',
       className: 'neutral',
@@ -2100,7 +2173,6 @@ function calculateBreakoutSignal(data, symbol = currentSymbol) {
     reason: 'precio sin ruptura confirmada de soporte/resistencia'
   };
 }
-
 function generateProSignal(symbol = currentSymbol) {
   const data = latestMarketData || {};
   const price = Number(data.price);
@@ -2191,7 +2263,7 @@ function generateProSignal(symbol = currentSymbol) {
   let risk = volatility.risk;
   let confidence = 'MEDIA';
 
-  const enoughTicks = getPriceHistory(symbol).length >= 25;
+  const enoughTicks = getPriceHistory(symbol).length >= 8;
   const bullishConfirmed = sessionTrend.label === 'ALCISTA' && (tickTrend.label === 'ALCISTA' || tickTrend.label === 'CALCULANDO');
   const dangerous = volatility.risk === 'ALTO' || breakout.falseBreakoutRisk || breakout.direction === 'down' || (Number.isFinite(rsi) && rsi > 75) || (Number.isFinite(percent) && Math.abs(percent) >= 4) || score <= -2;
 
