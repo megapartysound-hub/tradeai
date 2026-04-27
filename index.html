@@ -796,6 +796,10 @@ const marked = { parse: (text) => {
         <div class="a-card-val neutral" id="badge-breakout">—</div>
       </div>
       <div class="a-card">
+        <div class="a-card-label">Pre-Breakout</div>
+        <div class="a-card-val neutral" id="badge-prebreakout">—</div>
+      </div>
+      <div class="a-card">
         <div class="a-card-label">RSI</div>
         <div class="a-card-val neutral" id="badge-rsi">—</div>
       </div>
@@ -1937,7 +1941,7 @@ function saveCurrentSignalToHistory(source = 'manual') {
     source, symbol: currentSymbol, interval: currentInterval,
     price: Number(price.toFixed(4)),
     signal: signal.signal || 'ESPERAR', risk: signal.risk || 'MEDIO', confidence: signal.confidence || 'BAJA',
-    trend: signal.trend || 'SIN DATOS', breakout: signal.breakout || 'SIN RUPTURA', rsi: signal.rsi,
+    trend: signal.trend || 'SIN DATOS', breakout: signal.breakout || 'SIN RUPTURA', preBreakout: signal.preBreakout || 'SIN PRE-SEÑAL', rsi: signal.rsi,
     support: levels.support1, resistance: levels.resistance1, score: signal.score, reason: signal.reason || '',
     createdAt: new Date().toLocaleString('es-AR'), timestamp: Date.now()
   };
@@ -1983,7 +1987,7 @@ function renderSignalHistory() {
         <div><div style="font-family:var(--font-display);font-weight:800;color:var(--text);font-size:.95rem;">${item.symbol}</div><div style="font-size:.6rem;color:var(--muted);">${item.createdAt}</div></div>
         <div class="signal-history-meta">
           <div class="signal-tag ${signalClass}">${item.signal}</div>
-          <div>Precio: <span class="signal-history-price">$${Number(item.price).toFixed(2)}</span> · RSI: ${item.rsi ?? 'calc.'} · Trend: ${item.trend} · Breakout: ${item.breakout}</div>
+          <div>Precio: <span class="signal-history-price">$${Number(item.price).toFixed(2)}</span> · RSI: ${item.rsi ?? 'calc.'} · Trend: ${item.trend} · Breakout: ${item.breakout} · Pre: ${item.preBreakout || '—'}</div>
           <div>Riesgo: <strong style="color:var(--yellow)">${item.risk}</strong> · Confianza: <strong style="color:var(--accent)">${item.confidence}</strong> · Soporte: $${item.support} · Resistencia: $${item.resistance}</div>
         </div>
         <div style="text-align:right;white-space:nowrap;"><div style="font-size:.6rem;color:var(--muted);">Desde señal</div><div style="font-family:var(--font-display);font-weight:800;color:${perfColor};">${perfText}</div><button onclick="removeSignalHistoryItem('${item.id}')" style="margin-top:5px;background:transparent;border:1px solid var(--border);color:var(--muted);font-size:.58rem;padding:3px 7px;cursor:pointer;">BORRAR</button></div>
@@ -2378,6 +2382,54 @@ function calculateBreakoutSignal(data, symbol = currentSymbol) {
     reason: 'precio sin ruptura confirmada de soporte/resistencia'
   };
 }
+
+function calculatePreBreakoutSignal(data, symbol = currentSymbol) {
+  const price = Number(data?.price);
+  const percent = Number(data?.percent);
+  const levels = calculateMarketLevels(data);
+  const resistance1 = Number(levels.resistance1);
+  const support1 = Number(levels.support1);
+  const history = getPriceHistory(symbol).map(x => x.price);
+  const tickTrend = calculateTrendFromHistory(symbol);
+  const sessionTrend = calculateSessionTrendFromData(data);
+  const volatility = calculateVolatilityFromData(data);
+
+  if (!Number.isFinite(price) || !Number.isFinite(resistance1) || !Number.isFinite(support1) || resistance1 <= support1) {
+    return { label: 'SIN DATOS', className: 'neutral', direction: 'none', score: 0, distancePct: null, reason: 'faltan datos válidos para anticipar ruptura' };
+  }
+
+  const distToResistance = ((resistance1 - price) / price) * 100;
+  const distToSupport = ((price - support1) / price) * 100;
+  const rangePct = ((resistance1 - support1) / price) * 100;
+  const last5 = history.slice(-5);
+  const recentMomentum = last5.length >= 2 ? ((last5[last5.length - 1] - last5[0]) / last5[0]) * 100 : 0;
+
+  const closeToResistance = distToResistance >= 0 && distToResistance <= 0.85;
+  const closeToSupport = distToSupport >= 0 && distToSupport <= 0.85;
+  const veryCloseToResistance = distToResistance >= 0 && distToResistance <= 0.35;
+  const veryCloseToSupport = distToSupport >= 0 && distToSupport <= 0.35;
+
+  const bullishPressure = sessionTrend.label === 'ALCISTA' || tickTrend.label === 'ALCISTA' || recentMomentum > 0.15 || (Number.isFinite(percent) && percent > 0.25);
+  const bearishPressure = sessionTrend.label === 'BAJISTA' || tickTrend.label === 'BAJISTA' || recentMomentum < -0.15 || (Number.isFinite(percent) && percent < -0.25);
+  const volatilityOk = volatility.risk !== 'ALTO';
+  const compressedRange = Number.isFinite(rangePct) && rangePct <= 4.5;
+
+  if (veryCloseToResistance && bullishPressure && volatilityOk) {
+    return { label: 'POSIBLE RUPTURA ↑', className: 'bullish', direction: 'up-watch', score: compressedRange ? 1.5 : 1, distancePct: Number(distToResistance.toFixed(2)), reason: `precio a ${distToResistance.toFixed(2)}% de resistencia ${resistance1.toFixed(2)} con presión alcista; vigilar confirmación sobre el nivel` };
+  }
+  if (closeToResistance && bullishPressure) {
+    return { label: 'ACERCÁNDOSE ↑', className: 'neutral', direction: 'up-watch', score: 0.75, distancePct: Number(distToResistance.toFixed(2)), reason: `precio acercándose a resistencia ${resistance1.toFixed(2)}; falta ruptura y sostén` };
+  }
+  if (veryCloseToSupport && bearishPressure && volatilityOk) {
+    return { label: 'POSIBLE RUPTURA ↓', className: 'bearish', direction: 'down-watch', score: -1.5, distancePct: Number(distToSupport.toFixed(2)), reason: `precio a ${distToSupport.toFixed(2)}% de soporte ${support1.toFixed(2)} con presión bajista; vigilar pérdida del nivel` };
+  }
+  if (closeToSupport && bearishPressure) {
+    return { label: 'ACERCÁNDOSE ↓', className: 'neutral', direction: 'down-watch', score: -0.75, distancePct: Number(distToSupport.toFixed(2)), reason: `precio acercándose a soporte ${support1.toFixed(2)}; falta pérdida y confirmación` };
+  }
+
+  return { label: 'SIN PRE-SEÑAL', className: 'neutral', direction: 'none', score: 0, distancePct: null, reason: 'precio todavía lejos de zonas críticas de ruptura' };
+}
+
 function generateProSignal(symbol = currentSymbol) {
   const data = latestMarketData || {};
   const price = Number(data.price);
@@ -2389,6 +2441,7 @@ function generateProSignal(symbol = currentSymbol) {
   const volatility = calculateVolatilityFromData(data);
   const position = calculatePricePosition(data);
   const breakout = calculateBreakoutSignal(data, symbol);
+  const preBreakout = calculatePreBreakoutSignal(data, symbol);
 
   let score = 0;
   const reasons = [];
@@ -2455,6 +2508,10 @@ function generateProSignal(symbol = currentSymbol) {
     }
   }
 
+  // Pre-breakout: alerta temprana, no confirmación.
+  score += preBreakout.score;
+  if (preBreakout.direction !== 'none') reasons.push(preBreakout.reason);
+
   // Breakout real: suma solo si hay ruptura con confirmación; penaliza falsos rompimientos.
   score += breakout.score;
   if (breakout.confirmed && breakout.direction === 'up') reasons.push(breakout.reason);
@@ -2509,6 +2566,10 @@ function generateProSignal(symbol = currentSymbol) {
     breakoutDirection: breakout.direction,
     breakoutConfirmed: breakout.confirmed,
     breakoutReason: breakout.reason,
+    preBreakout: preBreakout.label,
+    preBreakoutClass: preBreakout.className,
+    preBreakoutDirection: preBreakout.direction,
+    preBreakoutReason: preBreakout.reason,
     signal,
     signalClass: className,
     risk,
@@ -2523,6 +2584,7 @@ function generateProSignal(symbol = currentSymbol) {
 function updateAnalysisBadges(sym) {
   const trendEl = document.getElementById('badge-trend');
   const breakoutEl = document.getElementById('badge-breakout');
+  const preBreakoutEl = document.getElementById('badge-prebreakout');
   const rsiEl = document.getElementById('badge-rsi');
   const sigEl = document.getElementById('badge-signal');
   const supEl = document.getElementById('badge-support');
@@ -2543,6 +2605,12 @@ function updateAnalysisBadges(sym) {
     breakoutEl.textContent = signal.breakout || '—';
     breakoutEl.className = 'a-card-val ' + (signal.breakoutClass || 'neutral');
     breakoutEl.title = signal.breakoutReason || '';
+  }
+
+  if (preBreakoutEl) {
+    preBreakoutEl.textContent = signal.preBreakout || '—';
+    preBreakoutEl.className = 'a-card-val ' + (signal.preBreakoutClass || 'neutral');
+    preBreakoutEl.title = signal.preBreakoutReason || '';
   }
 
   if (rsiEl) {
@@ -2617,6 +2685,8 @@ RSI calculado con historial real + ticks recientes: ${signal.rsi ?? 'calculándo
 Tendencia por ticks: ${signal.tickTrend || 'sin dato'}
 Tendencia de sesión: ${signal.sessionTrend || 'sin dato'}
 Breakout detectado: ${signal.breakout || 'sin dato'}
+Pre-breakout: ${signal.preBreakout || 'sin dato'}
+Detalle pre-breakout: ${signal.preBreakoutReason || 'sin dato'}
 Breakout confirmado: ${signal.breakoutConfirmed ? 'sí' : 'no'}
 Detalle breakout: ${signal.breakoutReason || 'sin dato'}
 Volatilidad del motor: ${signal.volatility}
