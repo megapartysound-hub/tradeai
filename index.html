@@ -558,6 +558,61 @@ const marked = { parse: (text) => {
     .app-body { grid-template-columns: 1fr; }
     .sidebar, .ai-panel { display: none; }
   }
+
+
+  /* ALERTAS PRO MODAL */
+  .alert-pro-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 14px 0;
+  }
+  .alert-pro-box {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    padding: 14px;
+  }
+  .alert-pro-box label {
+    display: block;
+    font-size: .62rem;
+    color: var(--muted);
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    margin-bottom: 7px;
+  }
+  .alert-pro-box input {
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: var(--font-mono);
+    padding: 9px 10px;
+    outline: none;
+  }
+  .alert-pro-box input:focus { border-color: var(--accent); }
+  .alert-list-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    font-size: .7rem;
+  }
+  .alert-list-item:last-child { border-bottom: none; }
+  .alert-pill-up { color: var(--green); }
+  .alert-pill-down { color: var(--red); }
+  .alert-remove-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: .6rem;
+    padding: 3px 7px;
+    cursor: pointer;
+  }
+  .alert-remove-btn:hover { border-color: var(--red); color: var(--red); }
+
 </style>
 </head>
 <body>
@@ -689,7 +744,7 @@ const marked = { parse: (text) => {
       <div style="display:flex;gap:8px;">
         <button class="btn-small" style="background:var(--surface2);color:var(--accent);border:1px solid var(--border);" onclick="analyzeCurrentChart()">⚡ Analizar con AI</button>
         <button class="btn-small" style="background:var(--surface2);color:var(--accent2);border:1px solid var(--border);" onclick="projectChart()">📈 Proyectar</button>
-        <button class="btn-small" style="background:var(--surface2);color:var(--yellow);border:1px solid var(--border);" onclick="promptCreatePriceAlert()">🔔 Alerta</button>
+        <button class="btn-small" style="background:var(--surface2);color:var(--yellow);border:1px solid var(--border);" onclick="openAlertModal()">🔔 Alertas PRO</button>
       </div>
     </div>
 
@@ -952,6 +1007,56 @@ const marked = { parse: (text) => {
       ">Cancelar</button>
     </div>
     <div id="apiKeyError" style="color:#ff4444;font-size:.68rem;margin-top:8px;display:none;"></div>
+  </div>
+</div>
+
+
+
+<!-- ALERTAS PRO MODAL -->
+<div id="alertModal" style="
+  display:none;
+  position:fixed;
+  inset:0;
+  background:rgba(5,8,16,.92);
+  z-index:1200;
+  align-items:center;
+  justify-content:center;
+  backdrop-filter:blur(6px);
+">
+  <div style="background:var(--surface);border:1px solid var(--border);width:90%;max-width:560px;padding:24px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+      <div style="font-family:var(--font-display);font-size:1.2rem;font-weight:800;color:var(--yellow);">🔔 Alertas PRO</div>
+      <button onclick="closeAlertModal()" style="background:transparent;border:1px solid var(--border);color:var(--muted);font-family:var(--font-mono);font-size:.7rem;padding:5px 12px;cursor:pointer;">CERRAR</button>
+    </div>
+
+    <div style="font-size:.72rem;color:var(--muted);line-height:1.6;margin-bottom:12px;">
+      Activo actual: <strong style="color:var(--text)" id="alertModalSymbol">AAPL</strong> · Precio actual: <strong style="color:var(--accent)" id="alertModalPrice">—</strong><br>
+      Podés cargar una alerta de ruptura al alza, una alerta de caída a la baja, o ambas.
+    </div>
+
+    <div class="alert-pro-row">
+      <div class="alert-pro-box">
+        <label>🔼 Alerta en alza</label>
+        <input type="number" step="0.01" id="alertUpInput" placeholder="Ej: 275.00">
+        <div style="font-size:.62rem;color:var(--muted);margin-top:6px;">Se activa si el precio es mayor o igual.</div>
+      </div>
+      <div class="alert-pro-box">
+        <label>🔽 Alerta en baja</label>
+        <input type="number" step="0.01" id="alertDownInput" placeholder="Ej: 260.00">
+        <div style="font-size:.62rem;color:var(--muted);margin-top:6px;">Se activa si el precio es menor o igual.</div>
+      </div>
+    </div>
+
+    <button onclick="saveProAlerts()" style="width:100%;background:var(--yellow);color:#000;border:none;font-family:var(--font-display);font-weight:800;font-size:.85rem;padding:11px;cursor:pointer;letter-spacing:.04em;">
+      GUARDAR ALERTAS
+    </button>
+
+    <div style="margin-top:18px;border:1px solid var(--border);background:var(--bg);">
+      <div style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:.62rem;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;">Alertas activas</div>
+      <div id="activeAlertsList" style="max-height:180px;overflow-y:auto;">
+        <div style="padding:12px;color:var(--muted);font-size:.7rem;text-align:center;">Sin alertas activas.</div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -1496,36 +1601,158 @@ function startWatchlistRealtime() {
   watchlistLiveInterval = setInterval(updateWatchlistRealtime, 15000);
 }
 
-function promptCreatePriceAlert() {
-  const current = Number(latestMarketData.price);
-  const suggestion = Number.isFinite(current) ? current.toFixed(2) : '';
-  const input = prompt(`Crear alerta para ${currentSymbol}.\nIngresá el precio objetivo:`, suggestion);
-  if (input === null) return;
+function loadSavedAlerts() {
+  try {
+    priceAlerts = JSON.parse(localStorage.getItem('tradeai_price_alerts') || '[]');
+  } catch (e) {
+    priceAlerts = [];
+  }
+}
 
-  const target = Number(String(input).replace(',', '.'));
-  if (!Number.isFinite(target) || target <= 0) {
-    alert('Precio inválido. Probá de nuevo con un número.');
+function saveAlertsToStorage() {
+  localStorage.setItem('tradeai_price_alerts', JSON.stringify(priceAlerts));
+}
+
+function openAlertModal() {
+  const modal = document.getElementById('alertModal');
+  const symEl = document.getElementById('alertModalSymbol');
+  const priceEl = document.getElementById('alertModalPrice');
+  const upInput = document.getElementById('alertUpInput');
+  const downInput = document.getElementById('alertDownInput');
+
+  const price = Number(latestMarketData.price);
+  if (symEl) symEl.textContent = currentSymbol;
+  if (priceEl) priceEl.textContent = Number.isFinite(price) ? '$' + price.toFixed(2) : '—';
+
+  if (upInput) upInput.value = '';
+  if (downInput) downInput.value = '';
+
+  renderActiveAlerts();
+  if (modal) modal.style.display = 'flex';
+}
+
+function closeAlertModal() {
+  const modal = document.getElementById('alertModal');
+  if (modal) modal.style.display = 'none';
+}
+
+function saveProAlerts() {
+  const upVal = document.getElementById('alertUpInput')?.value;
+  const downVal = document.getElementById('alertDownInput')?.value;
+  const upPrice = Number(String(upVal || '').replace(',', '.'));
+  const downPrice = Number(String(downVal || '').replace(',', '.'));
+
+  let created = 0;
+
+  if (Number.isFinite(upPrice) && upPrice > 0) {
+    priceAlerts.push({
+      id: Date.now() + '-up',
+      symbol: currentSymbol,
+      price: upPrice,
+      direction: 'above',
+      triggered: false,
+      createdAt: new Date().toLocaleString('es-AR')
+    });
+    created++;
+  }
+
+  if (Number.isFinite(downPrice) && downPrice > 0) {
+    priceAlerts.push({
+      id: Date.now() + '-down',
+      symbol: currentSymbol,
+      price: downPrice,
+      direction: 'below',
+      triggered: false,
+      createdAt: new Date().toLocaleString('es-AR')
+    });
+    created++;
+  }
+
+  if (!created) {
+    alert('Ingresá al menos un valor válido para alerta en alza o en baja.');
     return;
   }
 
-  const direction = Number.isFinite(current) && target < current ? 'below' : 'above';
-  priceAlerts.push({ symbol: currentSymbol, price: target, direction, triggered: false });
-  alert(`🔔 Alerta creada: ${currentSymbol} ${direction === 'above' ? 'rompe/sube a' : 'cae a'} $${target.toFixed(2)}`);
+  saveAlertsToStorage();
+  renderActiveAlerts();
+  alert(`🔔 ${created} alerta(s) creada(s) para ${currentSymbol}.`);
+}
+
+function removeAlert(id) {
+  priceAlerts = priceAlerts.filter(a => a.id !== id);
+  saveAlertsToStorage();
+  renderActiveAlerts();
+}
+
+function renderActiveAlerts() {
+  const list = document.getElementById('activeAlertsList');
+  if (!list) return;
+
+  const active = priceAlerts.filter(a => !a.triggered);
+  if (!active.length) {
+    list.innerHTML = '<div style="padding:12px;color:var(--muted);font-size:.7rem;text-align:center;">Sin alertas activas.</div>';
+    return;
+  }
+
+  list.innerHTML = active.map(a => {
+    const isUp = a.direction === 'above';
+    const label = isUp ? 'ALZA' : 'BAJA';
+    const icon = isUp ? '🔼' : '🔽';
+    const cls = isUp ? 'alert-pill-up' : 'alert-pill-down';
+    return `
+      <div class="alert-list-item">
+        <div>
+          <strong style="color:var(--text)">${a.symbol}</strong>
+          <span class="${cls}">${icon} ${label}</span>
+          <span style="color:var(--muted)">en</span>
+          <strong style="color:var(--accent)">$${Number(a.price).toFixed(2)}</strong>
+        </div>
+        <button class="alert-remove-btn" onclick="removeAlert('${a.id}')">BORRAR</button>
+      </div>`;
+  }).join('');
+}
+
+function playAlertSound() {
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    const ctx = new AudioCtx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.frequency.value = 880;
+    gain.gain.value = 0.08;
+    osc.start();
+    setTimeout(() => {
+      osc.stop();
+      ctx.close();
+    }, 350);
+  } catch (e) {}
 }
 
 function checkPriceAlerts() {
   const price = Number(latestMarketData.price);
   if (!Number.isFinite(price)) return;
 
+  let fired = false;
+
   priceAlerts.forEach(a => {
     if (a.triggered || a.symbol !== currentSymbol) return;
 
-    const hit = a.direction === 'above' ? price >= a.price : price <= a.price;
+    const hit = a.direction === 'above' ? price >= Number(a.price) : price <= Number(a.price);
     if (hit) {
       a.triggered = true;
-      alert(`🚨 ALERTA ${a.symbol}: precio actual $${price.toFixed(2)} alcanzó $${a.price.toFixed(2)}`);
+      fired = true;
+      const txt = a.direction === 'above' ? 'rompió al alza' : 'rompió a la baja';
+      alert(`🚨 ALERTA ${a.symbol}: ${txt} $${Number(a.price).toFixed(2)}. Precio actual: $${price.toFixed(2)}`);
     }
   });
+
+  if (fired) {
+    playAlertSound();
+    saveAlertsToStorage();
+    renderActiveAlerts();
+  }
 }
 
 function updateAnalysisBadges(sym) {
@@ -2005,6 +2232,7 @@ function startHeaderRealtimeTicker() {
 // INIT
 // ============================================================
 window.addEventListener('load', () => {
+  loadSavedAlerts();
   // Check session validity
   const session = getSession();
   if (!isSessionValid(session)) {
