@@ -776,6 +776,10 @@ const marked = { parse: (text) => {
         <div class="a-card-val neutral" id="badge-trend">—</div>
       </div>
       <div class="a-card">
+        <div class="a-card-label">Breakout</div>
+        <div class="a-card-val neutral" id="badge-breakout">—</div>
+      </div>
+      <div class="a-card">
         <div class="a-card-label">RSI</div>
         <div class="a-card-val neutral" id="badge-rsi">—</div>
       </div>
@@ -1974,6 +1978,129 @@ function calculateMarketLevels(data) {
   };
 }
 
+
+function calculateBreakoutSignal(data, symbol = currentSymbol) {
+  const price = Number(data?.price);
+  const percent = Number(data?.percent);
+  const levels = calculateMarketLevels(data);
+  const resistance1 = Number(levels.resistance1);
+  const support1 = Number(levels.support1);
+  const history = getPriceHistory(symbol).map(x => x.price);
+  const rsi = calculateRSIFromHistory(symbol, 14);
+  const tickTrend = calculateTrendFromHistory(symbol);
+  const volatility = calculateVolatilityFromData(data);
+
+  if (!Number.isFinite(price) || history.length < 20 || !Number.isFinite(resistance1) || !Number.isFinite(support1)) {
+    return {
+      label: 'CALCULANDO',
+      className: 'neutral',
+      direction: 'none',
+      confirmed: false,
+      falseBreakoutRisk: false,
+      score: 0,
+      level: null,
+      reason: 'faltan ticks/niveles para validar ruptura'
+    };
+  }
+
+  const recent = history.slice(-20);
+  const previous = recent.slice(0, -1);
+  const previousMax = Math.max(...previous);
+  const previousMin = Math.min(...previous);
+  const last5 = history.slice(-5);
+  const aboveResistanceTicks = last5.filter(p => p > resistance1).length;
+  const belowSupportTicks = last5.filter(p => p < support1).length;
+  const breakoutMarginUp = ((price - resistance1) / resistance1) * 100;
+  const breakoutMarginDown = ((support1 - price) / support1) * 100;
+
+  const brokeUpNow = previousMax <= resistance1 && price > resistance1 * 1.001;
+  const heldAbove = price > resistance1 && aboveResistanceTicks >= 3;
+  const bullishMomentum = tickTrend.label === 'ALCISTA' || (Number.isFinite(percent) && percent > 0.35);
+  const rsiOkForBreakout = !Number.isFinite(rsi) || (rsi >= 48 && rsi <= 74);
+  const notTooExtended = !Number.isFinite(percent) || Math.abs(percent) < 4;
+  const volatilityOk = volatility.risk !== 'ALTO';
+
+  const brokeDownNow = previousMin >= support1 && price < support1 * 0.999;
+  const heldBelow = price < support1 && belowSupportTicks >= 3;
+  const bearishMomentum = tickTrend.label === 'BAJISTA' || (Number.isFinite(percent) && percent < -0.35);
+
+  if ((brokeUpNow || heldAbove) && bullishMomentum) {
+    if (!rsiOkForBreakout || !notTooExtended || !volatilityOk) {
+      return {
+        label: 'FALSO BREAK?',
+        className: 'neutral',
+        direction: 'up',
+        confirmed: false,
+        falseBreakoutRisk: true,
+        score: -1,
+        level: resistance1,
+        reason: `rompe resistencia ${resistance1.toFixed(2)} pero falta confirmación limpia (${!rsiOkForBreakout ? 'RSI alto' : !notTooExtended ? 'movimiento extendido' : 'volatilidad alta'})`
+      };
+    }
+
+    return {
+      label: 'BREAKOUT ↑',
+      className: 'bullish',
+      direction: 'up',
+      confirmed: true,
+      falseBreakoutRisk: false,
+      score: 2,
+      level: resistance1,
+      reason: `ruptura alcista sobre ${resistance1.toFixed(2)} con ${heldAbove ? 'sostén de varios ticks' : 'primer impulso'} y tendencia favorable`
+    };
+  }
+
+  if ((brokeDownNow || heldBelow) && bearishMomentum) {
+    return {
+      label: 'RUPTURA ↓',
+      className: 'bearish',
+      direction: 'down',
+      confirmed: true,
+      falseBreakoutRisk: false,
+      score: -2,
+      level: support1,
+      reason: `pérdida de soporte ${support1.toFixed(2)} con presión bajista`
+    };
+  }
+
+  if (price > resistance1 * 0.997 && price <= resistance1 * 1.001) {
+    return {
+      label: 'TEST RES.',
+      className: 'neutral',
+      direction: 'up-watch',
+      confirmed: false,
+      falseBreakoutRisk: false,
+      score: 0.5,
+      level: resistance1,
+      reason: `precio testeando resistencia ${resistance1.toFixed(2)}, falta cierre/sostén sobre el nivel`
+    };
+  }
+
+  if (price < support1 * 1.003 && price >= support1 * 0.999) {
+    return {
+      label: 'TEST SOP.',
+      className: 'neutral',
+      direction: 'down-watch',
+      confirmed: false,
+      falseBreakoutRisk: false,
+      score: -0.5,
+      level: support1,
+      reason: `precio testeando soporte ${support1.toFixed(2)}, vigilar pérdida del nivel`
+    };
+  }
+
+  return {
+    label: 'SIN RUPTURA',
+    className: 'neutral',
+    direction: 'none',
+    confirmed: false,
+    falseBreakoutRisk: false,
+    score: 0,
+    level: null,
+    reason: 'precio sin ruptura confirmada de soporte/resistencia'
+  };
+}
+
 function generateProSignal(symbol = currentSymbol) {
   const data = latestMarketData || {};
   const price = Number(data.price);
@@ -1984,6 +2111,7 @@ function generateProSignal(symbol = currentSymbol) {
   const sessionTrend = calculateSessionTrendFromData(data);
   const volatility = calculateVolatilityFromData(data);
   const position = calculatePricePosition(data);
+  const breakout = calculateBreakoutSignal(data, symbol);
 
   let score = 0;
   const reasons = [];
@@ -2050,6 +2178,13 @@ function generateProSignal(symbol = currentSymbol) {
     }
   }
 
+  // Breakout real: suma solo si hay ruptura con confirmación; penaliza falsos rompimientos.
+  score += breakout.score;
+  if (breakout.confirmed && breakout.direction === 'up') reasons.push(breakout.reason);
+  else if (breakout.confirmed && breakout.direction === 'down') warnings.push(breakout.reason);
+  else if (breakout.falseBreakoutRisk) warnings.push(breakout.reason);
+  else reasons.push(breakout.reason);
+
   // Reglas de decisión prudentes.
   let signal = 'ESPERAR';
   let className = 'neutral';
@@ -2058,7 +2193,7 @@ function generateProSignal(symbol = currentSymbol) {
 
   const enoughTicks = getPriceHistory(symbol).length >= 25;
   const bullishConfirmed = sessionTrend.label === 'ALCISTA' && (tickTrend.label === 'ALCISTA' || tickTrend.label === 'CALCULANDO');
-  const dangerous = volatility.risk === 'ALTO' || (Number.isFinite(rsi) && rsi > 75) || (Number.isFinite(percent) && Math.abs(percent) >= 4) || score <= -2;
+  const dangerous = volatility.risk === 'ALTO' || breakout.falseBreakoutRisk || breakout.direction === 'down' || (Number.isFinite(rsi) && rsi > 75) || (Number.isFinite(percent) && Math.abs(percent) >= 4) || score <= -2;
 
   if (!enoughTicks) {
     signal = 'ESPERAR';
@@ -2071,7 +2206,7 @@ function generateProSignal(symbol = currentSymbol) {
     className = 'bearish';
     risk = 'ALTO';
     confidence = 'ALTA';
-  } else if (bullishConfirmed && score >= 3 && (!Number.isFinite(rsi) || (rsi >= 42 && rsi <= 70))) {
+  } else if (bullishConfirmed && breakout.confirmed && breakout.direction === 'up' && score >= 3 && (!Number.isFinite(rsi) || (rsi >= 42 && rsi <= 72))) {
     signal = 'POSIBLE COMPRA';
     className = 'bullish';
     risk = volatility.risk === 'BAJO' ? 'MEDIO' : volatility.risk;
@@ -2092,6 +2227,11 @@ function generateProSignal(symbol = currentSymbol) {
     volatility: volatility.label,
     volatilityValue: volatility.value,
     pricePosition: position.label,
+    breakout: breakout.label,
+    breakoutClass: breakout.className,
+    breakoutDirection: breakout.direction,
+    breakoutConfirmed: breakout.confirmed,
+    breakoutReason: breakout.reason,
     signal,
     signalClass: className,
     risk,
@@ -2105,6 +2245,7 @@ function generateProSignal(symbol = currentSymbol) {
 
 function updateAnalysisBadges(sym) {
   const trendEl = document.getElementById('badge-trend');
+  const breakoutEl = document.getElementById('badge-breakout');
   const rsiEl = document.getElementById('badge-rsi');
   const sigEl = document.getElementById('badge-signal');
   const supEl = document.getElementById('badge-support');
@@ -2117,6 +2258,12 @@ function updateAnalysisBadges(sym) {
   if (trendEl) {
     trendEl.textContent = signal.trend || '—';
     trendEl.className = 'a-card-val ' + (signal.trendClass || 'neutral');
+  }
+
+  if (breakoutEl) {
+    breakoutEl.textContent = signal.breakout || '—';
+    breakoutEl.className = 'a-card-val ' + (signal.breakoutClass || 'neutral');
+    breakoutEl.title = signal.breakoutReason || '';
   }
 
   if (rsiEl) {
@@ -2189,6 +2336,9 @@ Confianza del motor: ${signal.confidence}
 RSI calculado por ticks recientes: ${signal.rsi ?? 'calculándose'}
 Tendencia por ticks: ${signal.tickTrend || 'sin dato'}
 Tendencia de sesión: ${signal.sessionTrend || 'sin dato'}
+Breakout detectado: ${signal.breakout || 'sin dato'}
+Breakout confirmado: ${signal.breakoutConfirmed ? 'sí' : 'no'}
+Detalle breakout: ${signal.breakoutReason || 'sin dato'}
 Volatilidad del motor: ${signal.volatility}
 Score técnico interno: ${signal.score}
 Motivo técnico: ${signal.reason}
@@ -2207,6 +2357,8 @@ INSTRUCCIONES PARA RESPONDER:
 - No usar frases imperativas como "comprá ahora", "vendé ahora" o "entrar ya".
 - Usar lenguaje prudente: "posibilidad de compra", "posibilidad de venta", "esperar confirmación" o "riesgo alto".
 - Si el motor dice ESPERAR o RIESGO ALTO, no transformar eso en recomendación positiva.
+- Si hay breakout confirmado, tratarlo como escenario técnico de posibilidad, nunca como orden.
+- Si aparece FALSO BREAK? o TEST RES./TEST SOP., pedir confirmación y evitar sesgo agresivo.
 - Incluir entrada hipotética, stop loss, take profit y riesgo/recompensa solo como escenario educativo si el usuario pide señal operativa.
 - Para sugerir "posibilidad de compra" con más fundamento, considerar si el usuario cargó cartera/historial de compras; si no hay cartera cargada, aclarar que es solo una hipótesis técnica.
 - Advertir si el mercado está cerrado, si el dato puede venir demorado o si falta confirmación del gráfico.
