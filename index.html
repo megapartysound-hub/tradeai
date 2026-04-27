@@ -623,6 +623,21 @@ const marked = { parse: (text) => {
   .alert-list-item:last-child { border-bottom: none; }
   .alert-pill-up { color: var(--green); }
   .alert-pill-down { color: var(--red); }
+
+  /* HISTORIAL DE SEÑALES */
+  .signal-history-item {
+    display: grid;
+    grid-template-columns: 92px 1fr auto;
+    gap: 10px;
+    align-items: center;
+    padding: 10px;
+    border-bottom: 1px solid var(--border);
+    font-size: .68rem;
+  }
+  .signal-history-item:last-child { border-bottom: none; }
+  .signal-tag { font-family: var(--font-display); font-weight: 800; font-size: .72rem; }
+  .signal-history-meta { color: var(--muted); line-height: 1.55; }
+  .signal-history-price { color: var(--accent); font-weight: 700; }
   .alert-remove-btn {
     background: transparent;
     border: 1px solid var(--border);
@@ -766,6 +781,7 @@ const marked = { parse: (text) => {
         <button class="btn-small" style="background:var(--surface2);color:var(--accent);border:1px solid var(--border);" onclick="analyzeCurrentChart()">⚡ Analizar con AI</button>
         <button class="btn-small" style="background:var(--surface2);color:var(--accent2);border:1px solid var(--border);" onclick="projectChart()">📈 Proyectar</button>
         <button class="btn-small" style="background:var(--surface2);color:var(--yellow);border:1px solid var(--border);" onclick="openAlertModal()">🔔 Alertas PRO</button>
+        <button class="btn-small" style="background:var(--surface2);color:var(--green);border:1px solid var(--border);" onclick="openSignalHistoryModal()">📋 Historial</button>
       </div>
     </div>
 
@@ -1086,6 +1102,27 @@ const marked = { parse: (text) => {
       <div id="activeAlertsList" style="max-height:180px;overflow-y:auto;">
         <div style="padding:12px;color:var(--muted);font-size:.7rem;text-align:center;">Sin alertas activas.</div>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- HISTORIAL DE SEÑALES MODAL -->
+<div id="signalHistoryModal" style="display:none;position:fixed;inset:0;background:rgba(5,8,16,.92);z-index:1250;align-items:center;justify-content:center;backdrop-filter:blur(6px);">
+  <div style="background:var(--surface);border:1px solid var(--border);width:92%;max-width:760px;max-height:82vh;display:flex;flex-direction:column;">
+    <div style="padding:18px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:10px;">
+      <div>
+        <div style="font-family:var(--font-display);font-size:1.2rem;font-weight:800;color:var(--green);">📋 Historial de señales</div>
+        <div style="font-size:.68rem;color:var(--muted);margin-top:4px;">Guarda señales generadas con precio, RSI, tendencia, breakout, riesgo y confianza.</div>
+      </div>
+      <button onclick="closeSignalHistoryModal()" style="background:transparent;border:1px solid var(--border);color:var(--muted);font-family:var(--font-mono);font-size:.7rem;padding:5px 12px;cursor:pointer;">CERRAR</button>
+    </div>
+    <div style="padding:12px 20px;border-bottom:1px solid var(--border);display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+      <button onclick="saveCurrentSignalToHistory('manual')" style="background:var(--green);color:#000;border:none;font-family:var(--font-display);font-weight:800;font-size:.78rem;padding:9px 14px;cursor:pointer;">GUARDAR SEÑAL ACTUAL</button>
+      <button onclick="clearSignalHistory()" style="background:transparent;color:var(--red);border:1px solid rgba(255,68,68,.45);font-family:var(--font-mono);font-size:.7rem;padding:8px 12px;cursor:pointer;">BORRAR HISTORIAL</button>
+      <span id="signalHistoryCount" style="font-size:.68rem;color:var(--muted);margin-left:auto;"></span>
+    </div>
+    <div id="signalHistoryList" style="overflow-y:auto;flex:1;background:var(--bg);">
+      <div style="padding:18px;color:var(--muted);font-size:.75rem;text-align:center;">Sin señales guardadas todavía.</div>
     </div>
   </div>
 </div>
@@ -1556,6 +1593,9 @@ let finnhubWS = null;
 let finnhubWSCurrentSymbol = null;
 let watchlistLiveInterval = null;
 let priceAlerts = [];
+let signalHistory = [];
+let lastSignalHistoryKey = '';
+let lastSignalHistoryAt = 0;
 
 function startRealtimeFinnhub(symbol) {
   if (!FINNHUB_API_KEY || FINNHUB_API_KEY.includes('PEGÁ_TU_API_KEY')) return;
@@ -1786,6 +1826,85 @@ function checkPriceAlerts() {
     renderActiveAlerts();
   }
 }
+
+
+// ============================================================
+// HISTORIAL DE SEÑALES
+// ============================================================
+function loadSignalHistory() {
+  try { signalHistory = JSON.parse(localStorage.getItem('tradeai_signal_history') || '[]'); }
+  catch (e) { signalHistory = []; }
+}
+function saveSignalHistoryToStorage() {
+  localStorage.setItem('tradeai_signal_history', JSON.stringify(signalHistory.slice(0, 200)));
+}
+function saveCurrentSignalToHistory(source = 'manual') {
+  const signal = latestSignalEngine || generateProSignal(currentSymbol);
+  const price = Number(latestMarketData.price);
+  if (!signal || !Number.isFinite(price)) {
+    alert('Todavía no hay datos suficientes para guardar una señal. Esperá unos segundos.');
+    return;
+  }
+  const levels = calculateMarketLevels(latestMarketData);
+  const entry = {
+    id: Date.now() + '-' + Math.random().toString(16).slice(2),
+    source, symbol: currentSymbol, interval: currentInterval,
+    price: Number(price.toFixed(4)),
+    signal: signal.signal || 'ESPERAR', risk: signal.risk || 'MEDIO', confidence: signal.confidence || 'BAJA',
+    trend: signal.trend || 'SIN DATOS', breakout: signal.breakout || 'SIN RUPTURA', rsi: signal.rsi,
+    support: levels.support1, resistance: levels.resistance1, score: signal.score, reason: signal.reason || '',
+    createdAt: new Date().toLocaleString('es-AR'), timestamp: Date.now()
+  };
+  signalHistory.unshift(entry);
+  signalHistory = signalHistory.slice(0, 200);
+  saveSignalHistoryToStorage();
+  renderSignalHistory();
+  if (source === 'manual') alert('📋 Señal guardada en el historial.');
+}
+function autoSaveSignalIfImportant(signal) {
+  const price = Number(latestMarketData.price);
+  if (!signal || !Number.isFinite(price)) return;
+  const important = signal.signal === 'POSIBLE COMPRA' || signal.signal === 'RIESGO ALTO' || signal.breakoutConfirmed || signal.breakout === 'FALSO BREAK?';
+  if (!important) return;
+  const key = `${currentSymbol}|${signal.signal}|${signal.breakout}|${signal.risk}|${Math.round(price * 100)}`;
+  const now = Date.now();
+  if (key === lastSignalHistoryKey) return;
+  if (now - lastSignalHistoryAt < 120000) return;
+  lastSignalHistoryKey = key;
+  lastSignalHistoryAt = now;
+  saveCurrentSignalToHistory('auto');
+}
+function openSignalHistoryModal() { renderSignalHistory(); const modal = document.getElementById('signalHistoryModal'); if (modal) modal.style.display = 'flex'; }
+function closeSignalHistoryModal() { const modal = document.getElementById('signalHistoryModal'); if (modal) modal.style.display = 'none'; }
+function clearSignalHistory() { if (!confirm('¿Borrar todo el historial de señales?')) return; signalHistory = []; saveSignalHistoryToStorage(); renderSignalHistory(); }
+function renderSignalHistory() {
+  const list = document.getElementById('signalHistoryList');
+  const count = document.getElementById('signalHistoryCount');
+  if (count) count.textContent = `${signalHistory.length} señal(es) guardada(s)`;
+  if (!list) return;
+  if (!signalHistory.length) {
+    list.innerHTML = '<div style="padding:18px;color:var(--muted);font-size:.75rem;text-align:center;">Sin señales guardadas todavía.</div>';
+    return;
+  }
+  list.innerHTML = signalHistory.map(item => {
+    const signalClass = item.signal === 'POSIBLE COMPRA' ? 'bullish' : item.signal === 'RIESGO ALTO' ? 'bearish' : 'neutral';
+    const currentPrice = (item.symbol === currentSymbol) ? Number(latestMarketData.price) : NaN;
+    const perf = Number.isFinite(currentPrice) && Number(item.price) > 0 ? ((currentPrice - Number(item.price)) / Number(item.price)) * 100 : null;
+    const perfText = perf === null ? '—' : `${perf >= 0 ? '+' : ''}${perf.toFixed(2)}%`;
+    const perfColor = perf === null ? 'var(--muted)' : perf >= 0 ? 'var(--green)' : 'var(--red)';
+    return `
+      <div class="signal-history-item">
+        <div><div style="font-family:var(--font-display);font-weight:800;color:var(--text);font-size:.95rem;">${item.symbol}</div><div style="font-size:.6rem;color:var(--muted);">${item.createdAt}</div></div>
+        <div class="signal-history-meta">
+          <div class="signal-tag ${signalClass}">${item.signal}</div>
+          <div>Precio: <span class="signal-history-price">$${Number(item.price).toFixed(2)}</span> · RSI: ${item.rsi ?? 'calc.'} · Trend: ${item.trend} · Breakout: ${item.breakout}</div>
+          <div>Riesgo: <strong style="color:var(--yellow)">${item.risk}</strong> · Confianza: <strong style="color:var(--accent)">${item.confidence}</strong> · Soporte: $${item.support} · Resistencia: $${item.resistance}</div>
+        </div>
+        <div style="text-align:right;white-space:nowrap;"><div style="font-size:.6rem;color:var(--muted);">Desde señal</div><div style="font-family:var(--font-display);font-weight:800;color:${perfColor};">${perfText}</div><button onclick="removeSignalHistoryItem('${item.id}')" style="margin-top:5px;background:transparent;border:1px solid var(--border);color:var(--muted);font-size:.58rem;padding:3px 7px;cursor:pointer;">BORRAR</button></div>
+      </div>`;
+  }).join('');
+}
+function removeSignalHistoryItem(id) { signalHistory = signalHistory.filter(x => x.id !== id); saveSignalHistoryToStorage(); renderSignalHistory(); }
 
 // ============================================================
 // MOTOR DE SEÑALES PRO MEJORADO
@@ -2326,6 +2445,8 @@ function updateAnalysisBadges(sym) {
   const price = Number(latestMarketData.price);
   const levels = calculateMarketLevels(latestMarketData);
   const signal = generateProSignal(sym);
+  autoSaveSignalIfImportant(signal);
+  renderSignalHistory();
 
   if (trendEl) {
     trendEl.textContent = signal.trend || '—';
@@ -2773,6 +2894,7 @@ function startHeaderRealtimeTicker() {
 // ============================================================
 window.addEventListener('load', () => {
   loadSavedAlerts();
+  loadSignalHistory();
   // Check session validity
   const session = getSession();
   if (!isSessionValid(session)) {
