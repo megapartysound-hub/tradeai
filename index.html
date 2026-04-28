@@ -747,7 +747,7 @@ const marked = { parse: (text) => {
     <div class="sidebar-section">
       <div class="sidebar-title">Símbolo</div>
       <div class="symbol-input-wrap">
-        <input type="text" class="symbol-input" id="symbolInput" placeholder="AAPL, BTC..." value="AAPL">
+        <input type="text" class="symbol-input" id="symbolInput" placeholder="AAPL, GGAL, YPFD, BTC..." value="AAPL">
         <button class="btn-small" onclick="loadSymbol()">GO</button>
       </div>
     </div>
@@ -1456,14 +1456,49 @@ function normalizeTradingViewExchange(exchangeName) {
   return null;
 }
 
+
 async function resolveTradingViewSymbol(symbol) {
   const s = (symbol || 'AAPL').toUpperCase().trim();
 
   if (s.includes(':')) return s;
 
+  // === CRIPTO / COMMODITIES ===
   if (s === 'BTCUSD' || s === 'BTC' || s === 'BTCUSDT') return 'BINANCE:BTCUSDT';
   if (s === 'ETHUSD' || s === 'ETH' || s === 'ETHUSDT') return 'BINANCE:ETHUSDT';
   if (s === 'GOLD' || s === 'XAUUSD') return 'OANDA:XAUUSD';
+
+  // === ARGENTINA / BCBA ===
+  // Para MERVAL/IMV usamos GGAL como referencia segura porque algunos índices argentinos no cargan estable en el widget.
+  const argentinaMap = {
+    'MERVAL': 'BCBA:GGAL',
+    'MERV': 'BCBA:GGAL',
+    'IMV': 'BCBA:GGAL',
+    'IAB': 'BCBA:IAB',
+    'GGAL': 'BCBA:GGAL',
+    'YPFD': 'BCBA:YPFD',
+    'PAMP': 'BCBA:PAMP',
+    'BMA': 'BCBA:BMA',
+    'BYMA': 'BCBA:BYMA',
+    'ALUA': 'BCBA:ALUA',
+    'TXAR': 'BCBA:TXAR',
+    'COME': 'BCBA:COME',
+    'SUPV': 'BCBA:SUPV',
+    'CEPU': 'BCBA:CEPU',
+    'EDN': 'BCBA:EDN',
+    'TGSU2': 'BCBA:TGSU2',
+    'TRAN': 'BCBA:TRAN',
+    'MIRG': 'BCBA:MIRG',
+    'LOMA': 'BCBA:LOMA',
+    'CRES': 'BCBA:CRES',
+    'VALO': 'BCBA:VALO'
+  };
+
+  if (argentinaMap[s]) {
+    if (s === 'MERVAL' || s === 'MERV' || s === 'IMV') {
+      setTimeout(() => showChartNotice('MERVAL/IMV: mostrando GGAL como referencia del mercado argentino'), 600);
+    }
+    return argentinaMap[s];
+  }
 
   if (tradingViewSymbolCache[s]) return tradingViewSymbolCache[s];
 
@@ -1492,6 +1527,39 @@ async function resolveTradingViewSymbol(symbol) {
   tradingViewSymbolCache[s] = fallback;
   return fallback;
 }
+
+
+
+function showChartNotice(msg) {
+  const frame = document.querySelector('.chart-frame-container');
+  if (!frame) return;
+
+  let notice = document.getElementById('chartNotice');
+  if (!notice) {
+    notice = document.createElement('div');
+    notice.id = 'chartNotice';
+    notice.style.position = 'absolute';
+    notice.style.top = '10px';
+    notice.style.left = '10px';
+    notice.style.zIndex = '30';
+    notice.style.background = 'rgba(5,8,16,.88)';
+    notice.style.color = '#ffcc00';
+    notice.style.padding = '7px 11px';
+    notice.style.fontSize = '12px';
+    notice.style.border = '1px solid rgba(255,204,0,.35)';
+    notice.style.borderRadius = '4px';
+    notice.style.fontFamily = 'var(--font-mono)';
+    notice.style.pointerEvents = 'none';
+    frame.appendChild(notice);
+  }
+
+  notice.textContent = msg;
+  clearTimeout(window.__tradeaiChartNoticeTimer);
+  window.__tradeaiChartNoticeTimer = setTimeout(() => {
+    if (notice && notice.parentNode) notice.remove();
+  }, 4500);
+}
+
 
 async function initTradingView(symbol, interval) {
   const container = document.getElementById('tradingview-widget');
