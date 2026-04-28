@@ -599,6 +599,76 @@ const marked = { parse: (text) => {
   .bearish { color: var(--red); }
   .neutral { color: var(--yellow); }
 
+
+
+  /* PANEL SEÑALES PRO NIVEL TRADER */
+  .pro-signal-panel {
+    display: grid;
+    grid-template-columns: 1.1fr .7fr .7fr 1.4fr;
+    gap: 0;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(90deg, rgba(0,212,255,.055), rgba(123,97,255,.045));
+    flex-shrink: 0;
+  }
+  .pro-signal-cell {
+    padding: 9px 12px;
+    border-right: 1px solid var(--border);
+    min-width: 0;
+  }
+  .pro-signal-cell:last-child { border-right: none; }
+  .pro-signal-label {
+    font-size: .56rem;
+    color: var(--muted);
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    margin-bottom: 3px;
+  }
+  .pro-signal-main {
+    font-family: var(--font-display);
+    font-size: .96rem;
+    font-weight: 800;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .pro-signal-mini {
+    font-size: .66rem;
+    color: var(--muted);
+    line-height: 1.45;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .score-meter {
+    height: 7px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    overflow: hidden;
+    margin-top: 5px;
+  }
+  .score-meter-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--accent);
+    transition: width .25s ease;
+  }
+  .pro-signal-toast {
+    position: fixed;
+    right: 18px;
+    bottom: 44px;
+    z-index: 1600;
+    background: rgba(5,8,16,.96);
+    border: 1px solid var(--accent);
+    color: var(--text);
+    padding: 12px 14px;
+    width: min(360px, calc(100vw - 34px));
+    box-shadow: 0 10px 35px rgba(0,0,0,.35);
+    font-family: var(--font-mono);
+    font-size: .7rem;
+    line-height: 1.55;
+  }
+  .pro-signal-toast strong { color: var(--accent); }
+
   /* SCROLLBAR */
   ::-webkit-scrollbar { width: 4px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -883,6 +953,32 @@ const marked = { parse: (text) => {
       <div class="a-card">
         <div class="a-card-label">Resistencia</div>
         <div class="a-card-val neutral" id="badge-resistance">—</div>
+      </div>
+    </div>
+
+
+
+    <!-- PANEL PRO: SCORING + CONFIANZA + PROBABILIDAD -->
+    <div class="pro-signal-panel" id="proSignalPanel">
+      <div class="pro-signal-cell">
+        <div class="pro-signal-label">Señal PRO</div>
+        <div class="pro-signal-main neutral" id="pro-main-signal">ESPERAR</div>
+        <div class="pro-signal-mini" id="pro-main-detail">Esperando datos reales suficientes.</div>
+      </div>
+      <div class="pro-signal-cell">
+        <div class="pro-signal-label">Score técnico</div>
+        <div class="pro-signal-main neutral" id="pro-score">0 / 100</div>
+        <div class="score-meter"><div class="score-meter-fill" id="pro-score-fill"></div></div>
+      </div>
+      <div class="pro-signal-cell">
+        <div class="pro-signal-label">Confianza / Riesgo</div>
+        <div class="pro-signal-main neutral" id="pro-confidence">BAJA</div>
+        <div class="pro-signal-mini" id="pro-risk">Riesgo: MEDIO</div>
+      </div>
+      <div class="pro-signal-cell">
+        <div class="pro-signal-label">Lectura del motor</div>
+        <div class="pro-signal-main neutral" id="pro-setup">Sin setup confirmado</div>
+        <div class="pro-signal-mini" id="pro-reason">No operar por señal aislada. Esperar confirmación.</div>
       </div>
     </div>
 
@@ -2416,6 +2512,7 @@ function autoSaveSignalIfImportant(signal) {
   lastSignalHistoryKey = key;
   lastSignalHistoryAt = now;
   saveCurrentSignalToHistory('auto');
+  showProSignalToast(signal);
 }
 function openSignalHistoryModal() { renderSignalHistory(); const modal = document.getElementById('signalHistoryModal'); if (modal) modal.style.display = 'flex'; }
 function closeSignalHistoryModal() { const modal = document.getElementById('signalHistoryModal'); if (modal) modal.style.display = 'none'; }
@@ -2462,6 +2559,8 @@ let latestSignalEngine = {
   risk: 'MEDIO',
   confidence: 'BAJA',
   score: 0,
+  probability: 0,
+  setup: 'Sin setup confirmado',
   reason: 'Esperando datos suficientes.'
 };
 
@@ -2992,6 +3091,8 @@ function generateProSignal(symbol = currentSymbol) {
       risk: 'ALTO',
       confidence: 'BAJA',
       score: 0,
+      probability: 0,
+      setup: 'Sin datos',
       reason: 'No hay precio válido para evaluar.'
     };
     return latestSignalEngine;
@@ -3092,6 +3193,18 @@ function generateProSignal(symbol = currentSymbol) {
     confidence = score <= 0 ? 'BAJA' : 'MEDIA';
   }
 
+  let probability = Math.round(50 + (score * 8));
+  if (signal === 'POSIBLE COMPRA') probability += confidence === 'ALTA' ? 8 : 3;
+  if (signal === 'RIESGO ALTO') probability = Math.min(probability, 38);
+  if (signal === 'ESPERAR') probability = Math.min(probability, 62);
+  probability = Math.max(5, Math.min(92, probability));
+
+  let setup = 'Sin setup confirmado';
+  if (breakout.confirmed && breakout.direction === 'up') setup = 'Breakout confirmado';
+  else if (rebound.confirmed && rebound.direction === 'up') setup = 'Rebote confirmado';
+  else if (preBreakout.direction !== 'none') setup = 'Pre-breakout en vigilancia';
+  else if (dangerous) setup = 'Zona de riesgo';
+
   latestSignalEngine = {
     rsi: Number.isFinite(rsi) ? Number(rsi.toFixed(1)) : null,
     trend: tickTrend.label === 'CALCULANDO' ? sessionTrend.label : tickTrend.label,
@@ -3120,10 +3233,58 @@ function generateProSignal(symbol = currentSymbol) {
     risk,
     confidence,
     score: Number(score.toFixed(1)),
+    probability,
+    setup,
     reason: [...reasons, ...warnings].join(' · ')
   };
 
   return latestSignalEngine;
+}
+
+
+function renderProSignalPanel(signal) {
+  if (!signal) return;
+  const main = document.getElementById('pro-main-signal');
+  const detail = document.getElementById('pro-main-detail');
+  const scoreEl = document.getElementById('pro-score');
+  const fill = document.getElementById('pro-score-fill');
+  const conf = document.getElementById('pro-confidence');
+  const risk = document.getElementById('pro-risk');
+  const setup = document.getElementById('pro-setup');
+  const reason = document.getElementById('pro-reason');
+
+  const cls = signal.signalClass || 'neutral';
+  const rawScore = Number(signal.score);
+  const probability = Number.isFinite(signal.probability) ? signal.probability : Math.max(0, Math.min(100, Math.round(50 + rawScore * 8)));
+  const scoreText = Number.isFinite(rawScore) ? `${probability} / 100` : '— / 100';
+
+  if (main) { main.textContent = signal.signal || 'ESPERAR'; main.className = 'pro-signal-main ' + cls; }
+  if (detail) detail.textContent = `RSI ${signal.rsi ?? 'calc.'} · ${signal.trend || 'sin tendencia'} · ${signal.pricePosition || 'sin rango'}`;
+  if (scoreEl) { scoreEl.textContent = scoreText; scoreEl.className = 'pro-signal-main ' + (probability >= 70 ? 'bullish' : probability <= 35 ? 'bearish' : 'neutral'); }
+  if (fill) fill.style.width = Math.max(0, Math.min(100, probability)) + '%';
+  if (conf) { conf.textContent = signal.confidence || 'BAJA'; conf.className = 'pro-signal-main ' + (signal.confidence === 'ALTA' ? 'bullish' : signal.confidence === 'BAJA' ? 'neutral' : 'neutral'); }
+  if (risk) { risk.textContent = `Riesgo: ${signal.risk || 'MEDIO'}`; risk.className = 'pro-signal-mini ' + (signal.risk === 'ALTO' ? 'bearish' : signal.risk === 'BAJO' ? 'bullish' : 'neutral'); }
+  if (setup) { setup.textContent = signal.setup || 'Sin setup confirmado'; setup.className = 'pro-signal-main ' + cls; }
+  if (reason) {
+    const r = signal.reason || 'No operar por señal aislada. Esperar confirmación.';
+    reason.textContent = r.length > 150 ? r.slice(0, 150) + '…' : r;
+    reason.title = r;
+  }
+}
+
+function showProSignalToast(signal) {
+  if (!signal) return;
+  const old = document.getElementById('proSignalToast');
+  if (old) old.remove();
+  const price = Number(latestMarketData.price);
+  const div = document.createElement('div');
+  div.id = 'proSignalToast';
+  div.className = 'pro-signal-toast';
+  div.innerHTML = `<strong>🚨 Señal PRO: ${signal.signal}</strong><br>${currentSymbol} · ${Number.isFinite(price) ? '$' + price.toFixed(2) : 'precio s/d'} · Score ${signal.probability ?? '—'}/100 · Confianza ${signal.confidence}<br><span style="color:var(--muted)">${signal.setup || ''}</span>`;
+  document.body.appendChild(div);
+  playAlertSound();
+  clearTimeout(window.__tradeaiProSignalToastTimer);
+  window.__tradeaiProSignalToastTimer = setTimeout(() => { if (div && div.parentNode) div.remove(); }, 6500);
 }
 
 function updateAnalysisBadges(sym) {
@@ -3140,6 +3301,7 @@ function updateAnalysisBadges(sym) {
   const levels = calculateMarketLevels(latestMarketData);
   const signal = generateProSignal(sym);
   autoSaveSignalIfImportant(signal);
+  renderProSignalPanel(signal);
   renderSignalHistory();
 
   if (trendEl) {
@@ -3258,6 +3420,8 @@ Breakout confirmado: ${signal.breakoutConfirmed ? 'sí' : 'no'}
 Detalle breakout: ${signal.breakoutReason || 'sin dato'}
 Volatilidad del motor: ${signal.volatility}
 Score técnico interno: ${signal.score}
+Probabilidad técnica visual: ${signal.probability ?? 'sin dato'} / 100
+Setup detectado: ${signal.setup || 'sin setup confirmado'}
 Motivo técnico: ${signal.reason}
 
 NIVELES CALCULADOS AUTOMÁTICAMENTE:
