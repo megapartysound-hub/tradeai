@@ -317,6 +317,20 @@ const marked = { parse: (text) => {
 
   .overlay-badge span { color: var(--accent); }
 
+  .live-feed-status {
+    font-size: .62rem;
+    font-family: var(--font-mono);
+    color: var(--muted);
+    border: 1px solid var(--border);
+    background: rgba(5,8,16,.55);
+    padding: 4px 8px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .live-feed-status.ok { color: var(--green); border-color: rgba(0,230,118,.35); background: rgba(0,230,118,.06); }
+  .live-feed-status.warn { color: var(--yellow); border-color: rgba(255,204,0,.35); background: rgba(255,204,0,.06); }
+  .live-feed-status.err { color: var(--red); border-color: rgba(255,68,68,.35); background: rgba(255,68,68,.06); }
+
   /* AI PANEL RIGHT */
   .ai-panel {
     background: var(--surface);
@@ -723,7 +737,7 @@ const marked = { parse: (text) => {
   </div>
   <div class="header-controls">
     <span id="trialTimer" style="display:none;font-size:.72rem;font-family:var(--font-mono);color:var(--yellow);padding:4px 10px;border:1px solid rgba(255,204,0,.3);background:rgba(255,204,0,.08);"></span>
-    <span style="font-size:.65rem;color:var(--muted)">Powered by IA modular + TradingView</span>
+    <span style="font-size:.65rem;color:var(--muted)">Powered by IA modular + TradingView + feeds reales</span>
     <button onclick="openModal()" id="apiKeyBtn" style="
       background:transparent;
       border:1px solid var(--border);
@@ -825,6 +839,7 @@ const marked = { parse: (text) => {
         <div class="price-display">
           <div class="price-val" id="currentPrice">—</div>
           <div class="price-chg" id="currentChange">—</div>
+          <div class="live-feed-status warn" id="liveFeedStatus">feed iniciando</div>
         </div>
       </div>
       <div style="display:flex;gap:8px;">
@@ -1644,7 +1659,7 @@ function switchSymbol(sym) {
   // Primero cargamos historial real para que RSI no quede calculando.
   loadInitialHistoryPro(sym).then(() => updateAnalysisBadges(sym));
   updateRealPrice(sym);
-  startRealtimeFinnhub(sym);
+  startRealtimeMarket(sym);
   updateAnalysisBadges(sym);
 
   initTradingView(sym, currentInterval);
@@ -1696,6 +1711,84 @@ let latestMarketData = {
   updatedAt: null,
   source: 'Finnhub'
 };
+
+function setLiveFeedStatus(text, state = 'warn') {
+  const el = document.getElementById('liveFeedStatus');
+  if (!el) return;
+  el.textContent = text;
+  el.className = 'live-feed-status ' + state;
+}
+
+function isCryptoSymbol(symbol) {
+  const s = (symbol || '').toUpperCase().trim();
+  return ['BTC','BTCUSD','BTCUSDT','ETH','ETHUSD','ETHUSDT','BNB','BNBUSD','BNBUSDT','SOL','SOLUSD','SOLUSDT','ADA','ADAUSD','ADAUSDT','XRP','XRPUSD','XRPUSDT','DOGE','DOGEUSD','DOGEUSDT'].includes(s) || s.startsWith('BINANCE:');
+}
+
+function formatBinanceSymbol(symbol) {
+  const s = (symbol || 'BTCUSDT').toUpperCase().trim().replace('BINANCE:', '');
+  if (s === 'BTC' || s === 'BTCUSD') return 'BTCUSDT';
+  if (s === 'ETH' || s === 'ETHUSD') return 'ETHUSDT';
+  if (s === 'BNB' || s === 'BNBUSD') return 'BNBUSDT';
+  if (s === 'SOL' || s === 'SOLUSD') return 'SOLUSDT';
+  if (s === 'ADA' || s === 'ADAUSD') return 'ADAUSDT';
+  if (s === 'XRP' || s === 'XRPUSD') return 'XRPUSDT';
+  if (s === 'DOGE' || s === 'DOGEUSD') return 'DOGEUSDT';
+  return s.endsWith('USDT') ? s : s + 'USDT';
+}
+
+function displayPricePrefix(data) {
+  return data && data.source && data.source.includes('Binance') ? 'USDT ' : '$';
+}
+
+async function fetchBinance24hr(symbol) {
+  const binanceSymbol = formatBinanceSymbol(symbol);
+  const url = `https://api.binance.com/api/v3/ticker/24hr?symbol=${encodeURIComponent(binanceSymbol)}`;
+  const res = await fetch(url);
+  const data = await res.json();
+  if (!res.ok || !data || !data.lastPrice) return null;
+
+  return {
+    symbol: symbol,
+    finnhubSymbol: 'BINANCE:' + binanceSymbol,
+    price: Number(data.lastPrice),
+    change: Number(data.priceChange),
+    percent: Number(data.priceChangePercent),
+    open: Number(data.openPrice),
+    high: Number(data.highPrice),
+    low: Number(data.lowPrice),
+    previousClose: Number(data.prevClosePrice || data.openPrice),
+    updatedAt: new Date().toLocaleString('es-AR'),
+    source: 'Binance REST'
+  };
+}
+
+async function loadBinanceHistoryPro(symbol) {
+  const appSymbol = (symbol || currentSymbol || 'BTCUSD').toUpperCase().trim();
+  const binanceSymbol = formatBinanceSymbol(appSymbol);
+  const intervalMap = { '1':'1m', '5':'5m', '15':'15m', '60':'1h', 'D':'1d', 'W':'1w', 'M':'1M', '3M':'1M' };
+  const interval = intervalMap[currentInterval] || '1m';
+  const url = `https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(binanceSymbol)}&interval=${interval}&limit=220`;
+
+  try {
+    const { ok, data } = await fetchJsonWithTimeout(url, 5000);
+    if (!ok || !Array.isArray(data) || data.length < 16) return false;
+
+    const closes = data.map(k => ({
+      price: Number(k[4]),
+      time: Number(k[6]) || Number(k[0]) || Date.now()
+    })).filter(x => Number.isFinite(x.price) && x.price > 0);
+
+    if (closes.length < 16) return false;
+    priceHistoryBySymbol[appSymbol] = closes.slice(-220);
+    historyLoadedAtBySymbol[appSymbol] = Date.now();
+    rsiCacheBySymbol[appSymbol] = calculateRSIValue(closes.map(x => x.price), 14);
+    if (appSymbol === (currentSymbol || '').toUpperCase()) updateAnalysisBadges(appSymbol);
+    return true;
+  } catch (e) {
+    console.warn('Binance historial no disponible:', e);
+    return false;
+  }
+}
 
 function formatFinnhubSymbol(symbol) {
   const s = (symbol || 'AAPL').toUpperCase().trim();
@@ -1764,9 +1857,17 @@ function normalizeHistoryCandles(data) {
 }
 
 async function loadInitialHistoryPro(symbol, force = false) {
+  const appSymbol = (symbol || currentSymbol || 'AAPL').toUpperCase().trim();
+
+  // Cripto: Binance directo, sin API key, mucho más rápido que pasar por Finnhub.
+  if (isCryptoSymbol(appSymbol)) {
+    setRSILoadingState(appSymbol, 'Binance');
+    const ok = await loadBinanceHistoryPro(appSymbol);
+    if (ok) return true;
+  }
+
   if (!FINNHUB_API_KEY || FINNHUB_API_KEY.includes('PEGÁ_TU_API_KEY')) return false;
 
-  const appSymbol = (symbol || currentSymbol || 'AAPL').toUpperCase().trim();
   const existing = getPriceHistory(appSymbol);
 
   const loadedAt = historyLoadedAtBySymbol[appSymbol] || 0;
@@ -1840,6 +1941,11 @@ async function loadInitialHistoryPro(symbol, force = false) {
 }
 
 async function getRealPrice(symbol) {
+  if (isCryptoSymbol(symbol)) {
+    try { return await fetchBinance24hr(symbol); }
+    catch (e) { console.warn('Binance REST falló, intento Finnhub:', e); }
+  }
+
   if (!FINNHUB_API_KEY || FINNHUB_API_KEY.includes('PEGÁ_TU_API_KEY')) {
     console.warn('Falta configurar FINNHUB_API_KEY.');
     return null;
@@ -1886,7 +1992,7 @@ function paintPriceOnScreen(data) {
   const percent = Number(data.percent);
   const isUp = change >= 0;
 
-  priceEl.textContent = Number.isFinite(price) ? `$${price.toFixed(2)}` : '—';
+  priceEl.textContent = Number.isFinite(price) ? `${displayPricePrefix(data)}${price >= 1000 ? price.toLocaleString('en-US', { maximumFractionDigits: 2 }) : price.toFixed(2)}` : '—';
   priceEl.style.color = isUp ? 'var(--green)' : 'var(--red)';
 
   if (Number.isFinite(percent)) {
@@ -1904,7 +2010,8 @@ async function updateRealPrice(sym) {
   const chgEl = document.getElementById('currentChange');
 
   if (priceEl) priceEl.textContent = 'cargando...';
-  if (chgEl) chgEl.textContent = 'Finnhub';
+  if (chgEl) chgEl.textContent = isCryptoSymbol(sym) ? 'Binance' : 'Finnhub';
+  setLiveFeedStatus(isCryptoSymbol(sym) ? 'Binance REST' : 'Finnhub REST', 'warn');
 
   if (getPriceHistory(sym).length < 16) {
     loadInitialHistoryPro(sym).then(() => updateAnalysisBadges(sym));
@@ -1914,11 +2021,13 @@ async function updateRealPrice(sym) {
 
   if (!data) {
     if (priceEl) priceEl.textContent = 'sin datos';
-    if (chgEl) chgEl.textContent = 'revisar API key';
+    if (chgEl) chgEl.textContent = isCryptoSymbol(sym) ? 'revisar símbolo' : 'revisar API key';
+    setLiveFeedStatus('sin feed', 'err');
     return;
   }
 
   latestMarketData = data;
+  setLiveFeedStatus(data.source || 'REST', 'warn');
   paintPriceOnScreen(data);
   updateAnalysisBadges(sym);
 }
@@ -1934,6 +2043,95 @@ let priceAlerts = [];
 let signalHistory = [];
 let lastSignalHistoryKey = '';
 let lastSignalHistoryAt = 0;
+let binanceWS = null;
+let binanceWSCurrentSymbol = null;
+
+function closeRealtimeFeeds() {
+  if (finnhubWS) { try { finnhubWS.close(); } catch (e) {} finnhubWS = null; }
+  if (binanceWS) { try { binanceWS.close(); } catch (e) {} binanceWS = null; }
+}
+
+function startRealtimeMarket(symbol) {
+  closeRealtimeFeeds();
+  if (isCryptoSymbol(symbol)) {
+    startRealtimeBinance(symbol);
+  } else {
+    startRealtimeFinnhub(symbol);
+  }
+}
+
+function startRealtimeBinance(symbol) {
+  const appSymbol = (symbol || currentSymbol || 'BTCUSD').toUpperCase().trim();
+  const binanceSymbol = formatBinanceSymbol(appSymbol);
+  const stream = binanceSymbol.toLowerCase();
+  binanceWSCurrentSymbol = binanceSymbol;
+
+  setLiveFeedStatus('Binance WebSocket conectando', 'warn');
+  binanceWS = new WebSocket(`wss://stream.binance.com:9443/stream?streams=${stream}@trade/${stream}@ticker`);
+
+  binanceWS.onopen = () => {
+    console.log('🟢 Binance WebSocket conectado:', binanceSymbol);
+    setLiveFeedStatus('Binance WebSocket vivo', 'ok');
+  };
+
+  binanceWS.onmessage = (event) => {
+    let msg;
+    try { msg = JSON.parse(event.data); } catch (e) { return; }
+    const payload = msg.data || msg;
+    if (!payload) return;
+
+    let livePrice = null;
+    let change = latestMarketData.change;
+    let percent = latestMarketData.percent;
+    let open = latestMarketData.open;
+    let high = latestMarketData.high;
+    let low = latestMarketData.low;
+
+    if (payload.e === 'trade') {
+      livePrice = Number(payload.p);
+    } else if (payload.e === '24hrTicker') {
+      livePrice = Number(payload.c);
+      change = Number(payload.p);
+      percent = Number(payload.P);
+      open = Number(payload.o);
+      high = Number(payload.h);
+      low = Number(payload.l);
+    }
+
+    if (!Number.isFinite(livePrice) || appSymbol !== (currentSymbol || '').toUpperCase().trim()) return;
+
+    latestMarketData = {
+      ...latestMarketData,
+      symbol: appSymbol,
+      finnhubSymbol: 'BINANCE:' + binanceSymbol,
+      price: livePrice,
+      change,
+      percent,
+      open,
+      high,
+      low,
+      previousClose: Number.isFinite(open) ? open : latestMarketData.previousClose,
+      updatedAt: new Date().toLocaleString('es-AR'),
+      source: 'Binance WebSocket'
+    };
+
+    recordPriceHistory(appSymbol, livePrice);
+    paintPriceOnScreen(latestMarketData);
+    setLiveFeedStatus('Binance WebSocket vivo', 'ok');
+    updateAnalysisBadges(appSymbol);
+    checkPriceAlerts();
+  };
+
+  binanceWS.onerror = (err) => {
+    console.warn('Binance WebSocket error. Se mantiene REST como respaldo.', err);
+    setLiveFeedStatus('Binance WS fallback REST', 'warn');
+  };
+
+  binanceWS.onclose = () => {
+    console.log('🔴 Binance WebSocket cerrado');
+    if (isCryptoSymbol(currentSymbol)) setLiveFeedStatus('Binance WS cerrado · REST activo', 'warn');
+  };
+}
 
 function startRealtimeFinnhub(symbol) {
   if (!FINNHUB_API_KEY || FINNHUB_API_KEY.includes('PEGÁ_TU_API_KEY')) return;
@@ -1948,8 +2146,11 @@ function startRealtimeFinnhub(symbol) {
   finnhubWSCurrentSymbol = finnhubSymbol;
   finnhubWS = new WebSocket(`wss://ws.finnhub.io?token=${FINNHUB_API_KEY}`);
 
+  setLiveFeedStatus('Finnhub WebSocket conectando', 'warn');
+
   finnhubWS.onopen = () => {
     console.log('🟢 Finnhub WebSocket conectado:', finnhubSymbol);
+    setLiveFeedStatus('Finnhub WebSocket vivo', 'ok');
     finnhubWS.send(JSON.stringify({ type: 'subscribe', symbol: finnhubSymbol }));
   };
 
@@ -1967,6 +2168,7 @@ function startRealtimeFinnhub(symbol) {
       latestMarketData.price = livePrice;
       latestMarketData.updatedAt = liveTime;
       latestMarketData.source = 'Finnhub WebSocket';
+      setLiveFeedStatus('Finnhub WebSocket vivo', 'ok');
 
       if (Number.isFinite(Number(latestMarketData.previousClose)) && latestMarketData.previousClose > 0) {
         latestMarketData.change = livePrice - latestMarketData.previousClose;
@@ -1982,10 +2184,12 @@ function startRealtimeFinnhub(symbol) {
 
   finnhubWS.onerror = (err) => {
     console.warn('Finnhub WebSocket error. Se mantiene REST como respaldo.', err);
+    setLiveFeedStatus('Finnhub WS fallback REST', 'warn');
   };
 
   finnhubWS.onclose = () => {
     console.log('🔴 Finnhub WebSocket cerrado');
+    if (!isCryptoSymbol(currentSymbol)) setLiveFeedStatus('Finnhub WS cerrado · REST activo', 'warn');
   };
 }
 
@@ -3658,7 +3862,7 @@ window.addEventListener('load', () => {
 
   loadInitialHistoryPro('AAPL').then(() => updateAnalysisBadges('AAPL'));
   updateRealPrice('AAPL');
-  startRealtimeFinnhub('AAPL');
+  startRealtimeMarket('AAPL');
   updateAnalysisBadges('AAPL');
 
   // Sin API externa por defecto: arranca con Motor PRO interno.
