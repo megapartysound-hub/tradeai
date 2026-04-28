@@ -1456,42 +1456,65 @@ function normalizeTradingViewExchange(exchangeName) {
   return null;
 }
 
+
 async function resolveTradingViewSymbol(symbol) {
   const s = (symbol || 'AAPL').toUpperCase().trim();
 
-  if (s.includes(':')) return s;
-
-  if (s === 'BTCUSD' || s === 'BTC' || s === 'BTCUSDT') return 'BINANCE:BTCUSDT';
-  if (s === 'ETHUSD' || s === 'ETH' || s === 'ETHUSDT') return 'BINANCE:ETHUSDT';
+  if (s === 'BTC' || s === 'BTCUSD' || s === 'BTCUSDT') return 'BINANCE:BTCUSDT';
+  if (s === 'ETH' || s === 'ETHUSD' || s === 'ETHUSDT') return 'BINANCE:ETHUSDT';
   if (s === 'GOLD' || s === 'XAUUSD') return 'OANDA:XAUUSD';
 
-  if (tradingViewSymbolCache[s]) return tradingViewSymbolCache[s];
+  const argentinaMap = {
+    'MERVAL': 'BCBA:IMV',
+    'IMV': 'BCBA:IMV',
+    'IAB': 'BCBA:IAB',
+    'GGAL': 'BCBA:GGAL',
+    'YPFD': 'BCBA:YPFD',
+    'PAMP': 'BCBA:PAMP',
+    'BMA': 'BCBA:BMA',
+    'BYMA': 'BCBA:BYMA',
+    'ALUA': 'BCBA:ALUA',
+    'TXAR': 'BCBA:TXAR'
+  };
 
-  const fallback = formatTradingViewSymbol(s);
+  if (argentinaMap[s]) return argentinaMap[s];
 
-  if (!FINNHUB_API_KEY || FINNHUB_API_KEY.includes('PEGÁ_TU_API_KEY')) {
-    tradingViewSymbolCache[s] = fallback;
-    return fallback;
-  }
-
-  try {
-    const url = `https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(s)}&token=${FINNHUB_API_KEY}`;
-    const res = await fetch(url);
-    const profile = await res.json();
-    const tvExchange = normalizeTradingViewExchange(profile.exchange || '');
-
-    if (tvExchange) {
-      tradingViewSymbolCache[s] = `${tvExchange}:${s}`;
-      console.log('Exchange detectado:', s, '→', tradingViewSymbolCache[s], profile.exchange);
-      return tradingViewSymbolCache[s];
-    }
-  } catch (err) {
-    console.warn('No se pudo detectar exchange con Finnhub:', s, err);
-  }
-
-  tradingViewSymbolCache[s] = fallback;
-  return fallback;
+  return 'NASDAQ:' + s;
 }
+
+
+
+function loadTradingViewWidget(tvSymbol, tvInterval, fallbackTried = false) {
+  const container = document.getElementById('tradingview_chart_container');
+  if (!container) return;
+
+  container.innerHTML = '';
+
+  tvWidget = loadTradingViewWidget({
+    autosize: true,
+    symbol: tvSymbol,
+    interval: tvInterval,
+    timezone: 'America/Argentina/Buenos_Aires',
+    theme: 'dark',
+    style: '1',
+    locale: 'es',
+    toolbar_bg: '#0b0f1e',
+    enable_publishing: false,
+    withdateranges: true,
+    hide_side_toolbar: false,
+    allow_symbol_change: true,
+    container_id: 'tradingview_chart_container'
+  });
+
+  setTimeout(() => {
+    if (!container.innerHTML.trim()) {
+      if (!fallbackTried && tvSymbol === 'BCBA:IMV') {
+        loadTradingViewWidget('BCBA:GGAL', tvInterval, true);
+      }
+    }
+  }, 3000);
+}
+
 
 async function initTradingView(symbol, interval) {
   const container = document.getElementById('tradingview-widget');
@@ -1526,7 +1549,7 @@ async function initTradingView(symbol, interval) {
       return;
     }
 
-    tvWidget = new TradingView.widget({
+    tvWidget = loadTradingViewWidget({
       autosize: true,
       symbol: tvSymbol,
       interval: tvInterval,
