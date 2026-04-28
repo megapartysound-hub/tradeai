@@ -1643,12 +1643,15 @@ function formatFinnhubSymbol(symbol) {
 
 
 // ============================================================
-// RSI INSTANTÁNEO PRO
-// Carga historial real desde Finnhub Candle antes de esperar ticks.
-// Así el RSI aparece rápido y no queda dependiendo del WebSocket.
+// RSI PRO DE VERDAD
+// Objetivo: que el RSI aparezca rápido y siga vivo.
+// 1) Carga historial inicial real de Finnhub en paralelo.
+// 2) Calcula RSI con método Wilder, más estable que el promedio simple.
+// 3) Usa WebSocket/REST para mantener el historial actualizado.
 // ============================================================
 let historyLoadingBySymbol = {};
 let historyLoadedAtBySymbol = {};
+let rsiCacheBySymbol = {};
 
 function getFinnhubCandleEndpoint(finnhubSymbol) {
   const s = String(finnhubSymbol || '').toUpperCase();
@@ -1657,13 +1660,47 @@ function getFinnhubCandleEndpoint(finnhubSymbol) {
   return 'stock/candle';
 }
 
+function setRSILoadingState(symbol, text = 'hist...') {
+  const appSymbol = (symbol || currentSymbol || 'AAPL').toUpperCase().trim();
+  if (appSymbol !== (currentSymbol || '').toUpperCase().trim()) return;
+  const rsiEl = document.getElementById('badge-rsi');
+  if (rsiEl) {
+    rsiEl.textContent = text;
+    rsiEl.className = 'a-card-val neutral';
+    rsiEl.title = 'Cargando historial real para calcular RSI PRO...';
+  }
+}
+
+function fetchJsonWithTimeout(url, timeoutMs = 4500) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  return fetch(url, { signal: controller.signal })
+    .then(res => res.json().then(data => ({ ok: res.ok, data })))
+    .finally(() => clearTimeout(timer));
+}
+
+function normalizeHistoryCandles(data) {
+  if (!data || data.s !== 'ok' || !Array.isArray(data.c) || data.c.length < 16) return [];
+
+  const rows = data.c
+    .map((v, i) => ({
+      price: Number(v),
+      time: Array.isArray(data.t) && data.t[i] ? Number(data.t[i]) * 1000 : Date.now() - ((data.c.length - i) * 60000)
+    }))
+    .filter(x => Number.isFinite(x.price) && x.price > 0 && Number.isFinite(x.time));
+
+  const byTime = new Map();
+  rows.forEach(x => byTime.set(x.time, x));
+  return Array.from(byTime.values()).sort((a, b) => a.time - b.time).slice(-220);
+}
+
 async function loadInitialHistoryPro(symbol, force = false) {
   if (!FINNHUB_API_KEY || FINNHUB_API_KEY.includes('PEGÁ_TU_API_KEY')) return false;
 
   const appSymbol = (symbol || currentSymbol || 'AAPL').toUpperCase().trim();
   const existing = getPriceHistory(appSymbol);
 
-  // Si ya hay suficiente historial reciente, no gastamos llamadas de API.
   const loadedAt = historyLoadedAtBySymbol[appSymbol] || 0;
   if (!force && existing.length >= 25 && (Date.now() - loadedAt) < 5 * 60 * 1000) {
     return true;
@@ -1671,48 +1708,61 @@ async function loadInitialHistoryPro(symbol, force = false) {
 
   if (historyLoadingBySymbol[appSymbol]) return historyLoadingBySymbol[appSymbol];
 
+  setRSILoadingState(appSymbol, 'hist...');
+
   historyLoadingBySymbol[appSymbol] = (async () => {
     const finnhubSymbol = formatFinnhubSymbol(appSymbol);
     const endpoint = getFinnhubCandleEndpoint(finnhubSymbol);
     const now = Math.floor(Date.now() / 1000);
 
-    // Intentos de menor a mayor rango. Si mercado cerrado o no hay 1m, cae a 5m/15m/60m/D.
     const attempts = [
-      { resolution: '1',  days: 3 },
-      { resolution: '5',  days: 7 },
-      { resolution: '15', days: 14 },
-      { resolution: '60', days: 60 },
-      { resolution: 'D',  days: 220 }
+      { resolution: '5',  days: 10, priority: 1 },
+      { resolution: '15', days: 21, priority: 2 },
+      { resolution: '60', days: 90, priority: 3 },
+      { resolution: 'D',  days: 260, priority: 4 },
+      { resolution: '1',  days: 5,  priority: 5 }
     ];
 
-    for (const a of attempts) {
+    const requests = attempts.map(async (a) => {
+      const from = now - (a.days * 24 * 60 * 60);
+      const url = `https://finnhub.io/api/v1/${endpoint}?symbol=${encodeURIComponent(finnhubSymbol)}&resolution=${a.resolution}&from=${from}&to=${now}&token=${FINNHUB_API_KEY}`;
       try {
-        const from = now - (a.days * 24 * 60 * 60);
-        const url = `https://finnhub.io/api/v1/${endpoint}?symbol=${encodeURIComponent(finnhubSymbol)}&resolution=${a.resolution}&from=${from}&to=${now}&token=${FINNHUB_API_KEY}`;
-        const res = await fetch(url);
-        const data = await res.json();
-
-        if (!res.ok || !data || data.s !== 'ok' || !Array.isArray(data.c) || data.c.length < 16) {
-          continue;
-        }
-
-        const closes = data.c
-          .map((v, i) => ({ price: Number(v), time: (Array.isArray(data.t) && data.t[i] ? data.t[i] * 1000 : Date.now()) }))
-          .filter(x => Number.isFinite(x.price) && x.price > 0)
-          .slice(-160);
-
-        if (closes.length >= 16) {
-          priceHistoryBySymbol[appSymbol] = closes;
-          historyLoadedAtBySymbol[appSymbol] = Date.now();
-          console.log(`✅ Historial inicial cargado para ${appSymbol}: ${closes.length} velas (${a.resolution})`);
-          return true;
-        }
+        const { ok, data } = await fetchJsonWithTimeout(url, 4500);
+        if (!ok) return null;
+        const closes = normalizeHistoryCandles(data);
+        if (closes.length < 16) return null;
+        return { ...a, closes };
       } catch (e) {
-        console.warn('No se pudo cargar historial RSI:', appSymbol, a.resolution, e);
+        return null;
       }
+    });
+
+    const settled = await Promise.allSettled(requests);
+    const valid = settled
+      .filter(r => r.status === 'fulfilled' && r.value && r.value.closes.length >= 16)
+      .map(r => r.value)
+      .sort((a, b) => a.priority - b.priority || b.closes.length - a.closes.length);
+
+    if (valid.length) {
+      const best = valid[0];
+      priceHistoryBySymbol[appSymbol] = best.closes;
+      historyLoadedAtBySymbol[appSymbol] = Date.now();
+      rsiCacheBySymbol[appSymbol] = calculateRSIValue(best.closes.map(x => x.price), 14);
+      console.log(`✅ RSI PRO: historial cargado para ${appSymbol}: ${best.closes.length} velas (${best.resolution})`);
+      if (appSymbol === (currentSymbol || '').toUpperCase()) updateAnalysisBadges(appSymbol);
+      return true;
     }
 
-    console.warn('Finnhub no devolvió historial suficiente para RSI instantáneo:', appSymbol);
+    try {
+      const quote = await getRealPrice(appSymbol);
+      if (quote && Number.isFinite(Number(quote.price))) {
+        recordPriceHistory(appSymbol, Number(quote.price));
+        historyLoadedAtBySymbol[appSymbol] = Date.now();
+      }
+    } catch (e) {}
+
+    console.warn('Finnhub no devolvió historial suficiente para RSI PRO instantáneo:', appSymbol);
+    setRSILoadingState(appSymbol, 'ticks');
     return false;
   })();
 
@@ -1855,6 +1905,7 @@ function startRealtimeFinnhub(symbol) {
         latestMarketData.percent = ((livePrice - latestMarketData.previousClose) / latestMarketData.previousClose) * 100;
       }
 
+      recordPriceHistory(currentSymbol, livePrice);
       paintPriceOnScreen(latestMarketData);
       updateAnalysisBadges(currentSymbol);
       checkPriceAlerts();
@@ -2174,29 +2225,48 @@ function calculateEMA(values, period) {
   return ema;
 }
 
-function calculateRSIFromHistory(symbol, period = 14) {
-  const history = getPriceHistory(symbol);
-  if (history.length < period + 1) return null;
+function calculateRSIValue(prices, period = 14) {
+  if (!Array.isArray(prices) || prices.length < period + 1) return null;
 
-  const prices = history.map(x => x.price);
-  const slice = prices.slice(-(period + 1));
+  const clean = prices.map(Number).filter(v => Number.isFinite(v) && v > 0);
+  if (clean.length < period + 1) return null;
+
   let gains = 0;
   let losses = 0;
 
-  for (let i = 1; i < slice.length; i++) {
-    const diff = slice[i] - slice[i - 1];
-    if (diff > 0) gains += diff;
+  for (let i = 1; i <= period; i++) {
+    const diff = clean[i] - clean[i - 1];
+    if (diff >= 0) gains += diff;
     else losses += Math.abs(diff);
   }
 
-  const avgGain = gains / period;
-  const avgLoss = losses / period;
+  let avgGain = gains / period;
+  let avgLoss = losses / period;
+
+  for (let i = period + 1; i < clean.length; i++) {
+    const diff = clean[i] - clean[i - 1];
+    const gain = diff > 0 ? diff : 0;
+    const loss = diff < 0 ? Math.abs(diff) : 0;
+    avgGain = ((avgGain * (period - 1)) + gain) / period;
+    avgLoss = ((avgLoss * (period - 1)) + loss) / period;
+  }
 
   if (avgLoss === 0 && avgGain === 0) return 50;
   if (avgLoss === 0) return 100;
 
   const rs = avgGain / avgLoss;
-  return 100 - (100 / (1 + rs));
+  return Number((100 - (100 / (1 + rs))).toFixed(2));
+}
+
+function calculateRSIFromHistory(symbol, period = 14) {
+  const sym = (symbol || currentSymbol || 'AAPL').toUpperCase();
+  const history = getPriceHistory(sym);
+  if (history.length < period + 1) return rsiCacheBySymbol[sym] ?? null;
+
+  const prices = history.map(x => x.price);
+  const rsi = calculateRSIValue(prices, period);
+  if (rsi !== null) rsiCacheBySymbol[sym] = rsi;
+  return rsi;
 }
 
 function calculateTrendFromHistory(symbol) {
@@ -2815,9 +2885,21 @@ function updateAnalysisBadges(sym) {
   }
 
   if (rsiEl) {
-    const isLoadingHistory = !!historyLoadingBySymbol[(sym || currentSymbol || 'AAPL').toUpperCase()];
-    rsiEl.textContent = signal.rsi !== null ? signal.rsi : (isLoadingHistory ? 'hist...' : 'calc.');
-    rsiEl.className = 'a-card-val ' + (signal.rsi !== null && signal.rsi > 70 ? 'bearish' : signal.rsi !== null && signal.rsi < 35 ? 'bearish' : 'neutral');
+    const rsiSymbol = (sym || currentSymbol || 'AAPL').toUpperCase();
+    const isLoadingHistory = !!historyLoadingBySymbol[rsiSymbol];
+    const historyLen = getPriceHistory(rsiSymbol).length;
+
+    if (signal.rsi !== null) {
+      rsiEl.textContent = Number(signal.rsi).toFixed(2);
+      rsiEl.title = `RSI PRO calculado con ${historyLen} cierres reales + ticks recientes`;
+    } else {
+      rsiEl.textContent = isLoadingHistory ? 'hist...' : `ticks ${historyLen}/15`;
+      rsiEl.title = isLoadingHistory
+        ? 'Cargando historial real desde Finnhub...'
+        : 'Esperando 15 precios reales para calcular RSI. No se usan valores simulados.';
+    }
+
+    rsiEl.className = 'a-card-val ' + (signal.rsi !== null && signal.rsi >= 70 ? 'bearish' : signal.rsi !== null && signal.rsi <= 30 ? 'bearish' : signal.rsi !== null && signal.rsi >= 55 ? 'bullish' : 'neutral');
   }
 
   if (sigEl) {
