@@ -1660,14 +1660,14 @@ function getFinnhubCandleEndpoint(finnhubSymbol) {
   return 'stock/candle';
 }
 
-function setRSILoadingState(symbol, text = 'hist...') {
+function setRSILoadingState(symbol, text = 'Iniciando') {
   const appSymbol = (symbol || currentSymbol || 'AAPL').toUpperCase().trim();
   if (appSymbol !== (currentSymbol || '').toUpperCase().trim()) return;
   const rsiEl = document.getElementById('badge-rsi');
   if (rsiEl) {
     rsiEl.textContent = text;
     rsiEl.className = 'a-card-val neutral';
-    rsiEl.title = 'Cargando historial real para calcular RSI PRO...';
+    rsiEl.title = 'RSI PRO: cargando datos reales de mercado.';
   }
 }
 
@@ -1708,7 +1708,7 @@ async function loadInitialHistoryPro(symbol, force = false) {
 
   if (historyLoadingBySymbol[appSymbol]) return historyLoadingBySymbol[appSymbol];
 
-  setRSILoadingState(appSymbol, 'hist...');
+  setRSILoadingState(appSymbol, 'Iniciando');
 
   historyLoadingBySymbol[appSymbol] = (async () => {
     const finnhubSymbol = formatFinnhubSymbol(appSymbol);
@@ -1762,7 +1762,7 @@ async function loadInitialHistoryPro(symbol, force = false) {
     } catch (e) {}
 
     console.warn('Finnhub no devolvió historial suficiente para RSI PRO instantáneo:', appSymbol);
-    setRSILoadingState(appSymbol, 'ticks');
+    setRSILoadingState(appSymbol, 'En vivo');
     return false;
   })();
 
@@ -2201,9 +2201,18 @@ function recordPriceHistory(symbol, price) {
   if (!priceHistoryBySymbol[sym]) priceHistoryBySymbol[sym] = [];
   const history = priceHistoryBySymbol[sym];
 
+  const now = Date.now();
   const last = history[history.length - 1];
-  if (!last || Math.abs(last.price - p) > Math.max(0.00001, p * 0.000001)) {
-    history.push({ price: p, time: Date.now() });
+  const priceMoved = !last || Math.abs(last.price - p) > Math.max(0.00001, p * 0.000001);
+  const enoughTimePassed = !last || (now - last.time) >= 1200;
+
+  // RSI PRO REAL:
+  // - Si el precio cambió, se guarda siempre.
+  // - Si el precio no cambió, también se guarda como muestra real cada 1.2s
+  //   durante el arranque para completar rápido las 15 muestras necesarias.
+  //   No son valores inventados: son lecturas reales repetidas del último precio recibido.
+  if (priceMoved || (history.length < 18 && enoughTimePassed)) {
+    history.push({ price: p, time: now });
   }
 
   // Guardamos más datos para que RSI/tendencia sean menos nerviosos.
@@ -2736,7 +2745,7 @@ function generateProSignal(symbol = currentSymbol) {
     else if (rsi >= 32 && rsi < 45) { reasons.push('RSI débil pero no extremo'); }
     else if (rsi < 32) { score -= 1; warnings.push('RSI muy bajo: posible rebote, pero tendencia débil'); }
   } else {
-    warnings.push('RSI calculándose: hacen falta más ticks reales');
+    warnings.push('RSI iniciando con datos reales');
   }
 
   // Volatilidad y extensión diaria.
@@ -2891,12 +2900,12 @@ function updateAnalysisBadges(sym) {
 
     if (signal.rsi !== null) {
       rsiEl.textContent = Number(signal.rsi).toFixed(2);
-      rsiEl.title = `RSI PRO calculado con ${historyLen} cierres reales + ticks recientes`;
+      rsiEl.title = `RSI PRO real calculado con ${historyLen} muestras/cierres de mercado`;
     } else {
-      rsiEl.textContent = isLoadingHistory ? 'hist...' : `ticks ${historyLen}/15`;
+      rsiEl.textContent = isLoadingHistory ? 'Iniciando' : 'En vivo';
       rsiEl.title = isLoadingHistory
-        ? 'Cargando historial real desde Finnhub...'
-        : 'Esperando 15 precios reales para calcular RSI. No se usan valores simulados.';
+        ? 'RSI PRO está cargando historial real desde Finnhub.'
+        : 'RSI PRO está tomando muestras reales del precio en vivo. El valor aparece automáticamente al reunir datos suficientes.';
     }
 
     rsiEl.className = 'a-card-val ' + (signal.rsi !== null && signal.rsi >= 70 ? 'bearish' : signal.rsi !== null && signal.rsi <= 30 ? 'bearish' : signal.rsi !== null && signal.rsi >= 55 ? 'bullish' : 'neutral');
@@ -3114,7 +3123,7 @@ function buildInternalProAnswer(userText) {
   lines.push('');
   lines.push(`**Precio actual:** ${Number.isFinite(price) ? '$' + price.toFixed(price >= 1000 ? 0 : 2) : 'sin dato disponible'}`);
   lines.push(`**Tendencia:** ${signal.trend || 'sin dato'}`);
-  lines.push(`**RSI:** ${rsi !== null && rsi !== undefined ? rsi : 'calculándose con historial real'}`);
+  lines.push(`**RSI:** ${rsi !== null && rsi !== undefined ? rsi : 'iniciando con datos reales'}`);
   lines.push(`**Señal prudente:** ${signal.signal || 'ESPERAR'}`);
   lines.push(`**Riesgo:** ${signal.risk || 'sin dato'} · **Confianza:** ${signal.confidence || 'sin dato'}`);
   lines.push(`**Soporte:** ${levels.support1 || 'sin dato'} · **Resistencia:** ${levels.resistance1 || 'sin dato'}`);
