@@ -123,7 +123,7 @@ const marked = { parse: (text) => {
   /* MAIN LAYOUT */
   .app-body {
     display: grid;
-    grid-template-columns: 260px 1fr 340px;
+    grid-template-columns: 240px minmax(0, 1fr) 320px;
     flex: 1;
     overflow: hidden;
     gap: 0;
@@ -243,6 +243,7 @@ const marked = { parse: (text) => {
 
   /* CENTER CHART */
   .chart-area {
+    min-width: 0;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -251,6 +252,8 @@ const marked = { parse: (text) => {
 
   .chart-toolbar {
     display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     padding: 8px 16px;
@@ -582,12 +585,13 @@ const marked = { parse: (text) => {
   /* ANALYSIS CARDS */
   .analysis-cards {
     display: flex;
+    flex-wrap: wrap;
     gap: 0;
     border-bottom: 1px solid var(--border);
     flex-shrink: 0;
   }
   .a-card {
-    flex: 1;
+    flex: 1 1 96px;
     padding: 8px 12px;
     border-right: 1px solid var(--border);
     text-align: center;
@@ -604,7 +608,7 @@ const marked = { parse: (text) => {
   /* PANEL SEÑALES PRO NIVEL TRADER */
   .pro-signal-panel {
     display: grid;
-    grid-template-columns: 1.1fr .7fr .7fr 1.4fr;
+    grid-template-columns: minmax(150px,1.1fr) minmax(110px,.7fr) minmax(130px,.7fr) minmax(190px,1.4fr);
     gap: 0;
     border-bottom: 1px solid var(--border);
     background: linear-gradient(90deg, rgba(0,212,255,.055), rgba(123,97,255,.045));
@@ -687,6 +691,25 @@ const marked = { parse: (text) => {
     color: var(--muted);
   }
   .welcome-card strong { color: var(--accent); }
+
+  @media (max-width: 1280px) {
+    .app-body { grid-template-columns: 220px minmax(0, 1fr) 300px; }
+    .sidebar-section { padding: 12px 12px; }
+    .ai-panel { min-width: 0; }
+    .current-symbol { font-size: 1.15rem; }
+    .price-val { font-size: 1.2rem; }
+    .pro-signal-panel { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .pro-signal-cell:nth-child(2) { border-right: none; }
+    .pro-signal-cell { padding: 8px 10px; }
+  }
+
+  @media (max-width: 1080px) {
+    .app-body { grid-template-columns: 200px minmax(0, 1fr) 280px; }
+    .ticker-bar { max-width: 460px; min-width: 180px; }
+    .chart-toolbar > div:last-child { width: 100%; justify-content: flex-start; flex-wrap: wrap; }
+    .analysis-cards { max-height: 92px; overflow-y: auto; }
+    .a-card { flex: 1 1 25%; padding: 6px 8px; }
+  }
 
   @media (max-width: 900px) {
     .app-body { grid-template-columns: 1fr; }
@@ -2491,7 +2514,7 @@ function saveCurrentSignalToHistory(source = 'manual') {
     price: Number(price.toFixed(4)),
     signal: signal.signal || 'ESPERAR', risk: signal.risk || 'MEDIO', confidence: signal.confidence || 'BAJA',
     trend: signal.trend || 'SIN DATOS', breakout: signal.breakout || 'SIN RUPTURA', preBreakout: signal.preBreakout || 'SIN PRE-SEÑAL', rebound: signal.rebound || 'SIN REBOTE', rsi: signal.rsi,
-    support: levels.support1, resistance: levels.resistance1, score: signal.score, reason: signal.reason || '',
+    support: levels.support1, resistance: levels.resistance1, score: signal.score, probability: signal.probability, setup: signal.setup || '', adaptive: signal.adaptiveMemory?.note || '', reason: signal.reason || '',
     createdAt: new Date().toLocaleString('es-AR'), timestamp: Date.now()
   };
   signalHistory.unshift(entry);
@@ -3062,6 +3085,50 @@ function calculateReboundSignal(data, symbol = currentSymbol) {
   return { label: 'SIN REBOTE', className: 'neutral', direction: 'none', confirmed: false, falseReboundRisk: false, score: 0, level: null, reason: 'precio lejos de soporte o sin reacción alcista confirmada' };
 }
 
+
+function getAdaptiveSignalMemory(symbol, signalName) {
+  const sym = (symbol || currentSymbol || '').toUpperCase();
+  const priceNow = Number(latestMarketData?.price);
+  if (!sym || !Number.isFinite(priceNow) || !Array.isArray(signalHistory) || signalHistory.length === 0) {
+    return { count: 0, wins: 0, losses: 0, adjustment: 0, note: 'sin memoria previa suficiente' };
+  }
+
+  const minAgeMs = 3 * 60 * 1000;
+  const now = Date.now();
+  const matches = signalHistory
+    .filter(item => item && item.symbol === sym && item.signal === signalName && Number.isFinite(Number(item.price)) && (now - Number(item.time || 0)) > minAgeMs)
+    .slice(0, 30);
+
+  let wins = 0;
+  let losses = 0;
+
+  for (const item of matches) {
+    const entry = Number(item.price);
+    if (!Number.isFinite(entry) || entry <= 0) continue;
+    const movePct = ((priceNow - entry) / entry) * 100;
+
+    if (signalName === 'POSIBLE COMPRA') {
+      if (movePct >= 0.25) wins++;
+      else if (movePct <= -0.25) losses++;
+    } else if (signalName === 'RIESGO ALTO') {
+      if (movePct <= -0.25) wins++;
+      else if (movePct >= 0.25) losses++;
+    }
+  }
+
+  const count = wins + losses;
+  if (count < 4) return { count, wins, losses, adjustment: 0, note: count ? `memoria chica: ${wins}/${count}` : 'sin memoria comparable' };
+
+  const hitRate = wins / count;
+  let adjustment = 0;
+  if (hitRate >= 0.68) adjustment = 7;
+  else if (hitRate >= 0.58) adjustment = 4;
+  else if (hitRate <= 0.32) adjustment = -7;
+  else if (hitRate <= 0.42) adjustment = -4;
+
+  return { count, wins, losses, hitRate, adjustment, note: `memoria adaptativa ${wins}/${count} (${Math.round(hitRate * 100)}%)` };
+}
+
 function generateProSignal(symbol = currentSymbol) {
   const data = latestMarketData || {};
   const price = Number(data.price);
@@ -3197,7 +3264,17 @@ function generateProSignal(symbol = currentSymbol) {
   if (signal === 'POSIBLE COMPRA') probability += confidence === 'ALTA' ? 8 : 3;
   if (signal === 'RIESGO ALTO') probability = Math.min(probability, 38);
   if (signal === 'ESPERAR') probability = Math.min(probability, 62);
+  const adaptiveMemory = getAdaptiveSignalMemory(symbol, signal);
+  if (adaptiveMemory.adjustment) {
+    probability += adaptiveMemory.adjustment;
+    if (adaptiveMemory.adjustment > 0) reasons.push(`${adaptiveMemory.note}: suma confianza`);
+    else warnings.push(`${adaptiveMemory.note}: baja confianza`);
+  }
+
   probability = Math.max(5, Math.min(92, probability));
+
+  if (adaptiveMemory.adjustment >= 7 && confidence === 'MEDIA') confidence = 'ALTA';
+  if (adaptiveMemory.adjustment <= -7 && confidence !== 'BAJA') confidence = 'MEDIA';
 
   let setup = 'Sin setup confirmado';
   if (breakout.confirmed && breakout.direction === 'up') setup = 'Breakout confirmado';
@@ -3234,6 +3311,7 @@ function generateProSignal(symbol = currentSymbol) {
     confidence,
     score: Number(score.toFixed(1)),
     probability,
+    adaptiveMemory,
     setup,
     reason: [...reasons, ...warnings].join(' · ')
   };
@@ -3266,7 +3344,8 @@ function renderProSignalPanel(signal) {
   if (risk) { risk.textContent = `Riesgo: ${signal.risk || 'MEDIO'}`; risk.className = 'pro-signal-mini ' + (signal.risk === 'ALTO' ? 'bearish' : signal.risk === 'BAJO' ? 'bullish' : 'neutral'); }
   if (setup) { setup.textContent = signal.setup || 'Sin setup confirmado'; setup.className = 'pro-signal-main ' + cls; }
   if (reason) {
-    const r = signal.reason || 'No operar por señal aislada. Esperar confirmación.';
+    const mem = signal.adaptiveMemory?.note && signal.adaptiveMemory.count >= 4 ? ' · ' + signal.adaptiveMemory.note : '';
+    const r = (signal.reason || 'No operar por señal aislada. Esperar confirmación.') + mem;
     reason.textContent = r.length > 150 ? r.slice(0, 150) + '…' : r;
     reason.title = r;
   }
