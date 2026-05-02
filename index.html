@@ -534,6 +534,43 @@ const marked = { parse: (text) => {
 
 
 
+
+
+  /* CARD DE ADMIN DENTRO DE LA APP */
+  .admin-access-card {
+    margin: 10px 14px;
+    padding: 12px;
+    border: 1px solid rgba(0,212,255,.28);
+    background: linear-gradient(135deg, rgba(0,212,255,.08), rgba(123,97,255,.06));
+    flex-shrink: 0;
+  }
+  .admin-access-title {
+    font-family: var(--font-display);
+    font-size: .82rem;
+    font-weight: 800;
+    color: var(--accent);
+    margin-bottom: 4px;
+  }
+  .admin-access-text {
+    font-size: .62rem;
+    color: var(--muted);
+    line-height: 1.45;
+    margin-bottom: 9px;
+  }
+  .admin-access-btn {
+    width: 100%;
+    background: var(--accent);
+    color: #000;
+    border: none;
+    font-family: var(--font-display);
+    font-size: .76rem;
+    font-weight: 800;
+    padding: 9px 10px;
+    cursor: pointer;
+    letter-spacing: .04em;
+  }
+  .admin-access-btn:hover { opacity: .86; }
+
   /* SELECTOR IA MODULAR */
   .ai-provider-box {
     padding: 10px 14px;
@@ -831,6 +868,17 @@ const marked = { parse: (text) => {
   <div class="header-controls">
     <span id="trialTimer" style="display:none;font-size:.72rem;font-family:var(--font-mono);color:var(--yellow);padding:4px 10px;border:1px solid rgba(255,204,0,.3);background:rgba(255,204,0,.08);"></span>
     <span style="font-size:.65rem;color:var(--muted)">Powered by IA modular + TradingView + feeds reales</span>
+    <button onclick="openAdmin()" id="adminTopBtn" title="Entrar como administrador" style="
+      background:transparent;
+      border:1px solid rgba(0,212,255,.35);
+      color:var(--accent);
+      font-family:var(--font-mono);
+      font-size:.65rem;
+      padding:5px 12px;
+      cursor:pointer;
+      transition:all .2s;
+      margin-left:12px;
+    ">⚙️ Admin</button>
     <button onclick="openModal()" id="apiKeyBtn" style="
       background:transparent;
       border:1px solid var(--border);
@@ -1042,6 +1090,16 @@ const marked = { parse: (text) => {
       <div class="ai-provider-note" id="aiProviderNote">
         Modo actual: <strong>Motor PRO interno</strong>. Usa los datos reales de TradeAI y no requiere API externa.
       </div>
+    </div>
+
+
+
+    <div class="admin-access-card" id="adminAccessCard">
+      <div class="admin-access-title">⚙️ Administración</div>
+      <div class="admin-access-text">
+        Entrá como administrador para generar códigos de prueba de 15 minutos o códigos completos para clientes.
+      </div>
+      <button class="admin-access-btn" onclick="openAdmin()">ENTRAR COMO ADMIN</button>
     </div>
 
     <div class="quick-actions">
@@ -4087,6 +4145,37 @@ function startHeaderRealtimeTicker() {
   updateHeaderTickers();
   setInterval(updateHeaderTickers, 30000);
 }
+
+
+
+// ============================================================
+// ADMIN CARD / ACCESO ADMIN GLOBAL
+// ============================================================
+// Permite abrir el panel admin también desde la app ya logueada.
+window.openAdmin = function() {
+  try {
+    const pwd = prompt('Contraseña de administrador:');
+    if (pwd !== ADMIN_PASSWORD) {
+      alert('Contraseña incorrecta.');
+      return;
+    }
+    if (typeof renderAdminPanel === 'function') renderAdminPanel();
+    const panel = document.getElementById('adminPanel');
+    if (panel) {
+      panel.style.display = 'flex';
+    } else {
+      alert('No se encontró el panel administrador en el HTML.');
+    }
+  } catch (err) {
+    console.error('Error al abrir admin:', err);
+    alert('Error al abrir el panel administrador.');
+  }
+};
+
+window.closeAdmin = function() {
+  const panel = document.getElementById('adminPanel');
+  if (panel) panel.style.display = 'none';
+};
 
 // ============================================================
 // INIT
